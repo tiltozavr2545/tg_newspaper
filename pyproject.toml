@@ -1,0 +1,19 @@
+[project]
+name = "tg-newspaper"
+version = "0.1.0"
+description = "Агент, который печатает бумажную газету из вчерашних новостей Telegram-каналов"
+authors = [
+    { name = "Тимофей Русаков", email = "toptim2545@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.2.3",
+    "telethon>=1.45.0",
+]
+
+[project.scripts]
+tg-newspaper = "tg_newspaper:main"
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"

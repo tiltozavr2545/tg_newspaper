@@ -1,0 +1,4 @@
+# Список каналов-источников. Скопировать в channels.yaml и заполнить.
+# Формат — username канала без @ (как в ссылке t.me/<username>).
+channels:
+  - example_channel
