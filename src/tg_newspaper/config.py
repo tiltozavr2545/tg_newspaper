@@ -26,6 +26,12 @@ class Config:
     session_name: str
     channels: list[str]
     db_path: Path
+    # Gemini — нужен только для LLM-классификации (Этап 2 п.2), не для сбора/эвристик.
+    # Пустой api_key — нормально для остального пайплайна; GeminiClassifier сам
+    # откажет с понятной ошибкой, если его создать без ключа.
+    gemini_api_key: str
+    gemini_model: str
+    gemini_base_url: str  # прокси к Gemini (Cloudflare Worker); пусто = напрямую
 
 
 def load_config() -> Config:
@@ -44,4 +50,7 @@ def load_config() -> Config:
         session_name=session_name,
         channels=channels,
         db_path=DB_PATH,
+        gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
+        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+        gemini_base_url=os.environ.get("GEMINI_BASE_URL", "").strip().rstrip("/"),
     )
