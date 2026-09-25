@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS pipeline_outcomes (
     stage TEXT NOT NULL,
     reason TEXT NOT NULL,
     needs_photo INTEGER NOT NULL DEFAULT 0,
+    -- Оценка значимости от LLM-классификатора (1-5, см. classifier.py) —
+    -- Этап 3: печатать в первую очередь важное, сокращать/выбрасывать
+    -- проходное, когда всё не помещается в фиксированный номер полос. 0 —
+    -- не определено (пост не дошёл до LLM-классификации либо прогон сделан
+    -- до появления этого поля).
+    importance INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, channel, message_id)
 );
 """
@@ -83,6 +89,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for column in ("period_start", "period_end"):
         if column not in columns:
             conn.execute(f"ALTER TABLE pipeline_runs ADD COLUMN {column} TEXT")
+
+    outcome_columns = {row[1] for row in conn.execute("PRAGMA table_info(pipeline_outcomes)")}
+    if "importance" not in outcome_columns:
+        conn.execute("ALTER TABLE pipeline_outcomes ADD COLUMN importance INTEGER NOT NULL DEFAULT 0")
+
     conn.commit()
 
 
@@ -137,16 +148,16 @@ def create_run(
 def save_outcomes(
     conn: sqlite3.Connection,
     run_id: int,
-    rows: list[tuple[str, int, bool, str, str, bool]],
+    rows: list[tuple[str, int, bool, str, str, bool, int]],
 ) -> None:
-    """rows: (channel, message_id, included, stage, reason, needs_photo)."""
+    """rows: (channel, message_id, included, stage, reason, needs_photo, importance)."""
     conn.executemany(
         "INSERT INTO pipeline_outcomes "
-        "(run_id, channel, message_id, included, stage, reason, needs_photo) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(run_id, channel, message_id, included, stage, reason, needs_photo, importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (run_id, ch, mid, int(inc), stage, reason, int(needs_photo))
-            for ch, mid, inc, stage, reason, needs_photo in rows
+            (run_id, ch, mid, int(inc), stage, reason, int(needs_photo), importance)
+            for ch, mid, inc, stage, reason, needs_photo, importance in rows
         ],
     )
     conn.commit()
@@ -169,15 +180,15 @@ def list_runs(conn: sqlite3.Connection) -> list[Run]:
 
 def load_outcomes(
     conn: sqlite3.Connection, run_id: int
-) -> list[tuple[str, int, bool, str, str, bool]]:
+) -> list[tuple[str, int, bool, str, str, bool, int]]:
     rows = conn.execute(
-        "SELECT channel, message_id, included, stage, reason, needs_photo "
+        "SELECT channel, message_id, included, stage, reason, needs_photo, importance "
         "FROM pipeline_outcomes WHERE run_id = ?",
         (run_id,),
     ).fetchall()
     return [
-        (ch, mid, bool(inc), stage, reason, bool(needs_photo))
-        for ch, mid, inc, stage, reason, needs_photo in rows
+        (ch, mid, bool(inc), stage, reason, bool(needs_photo), importance)
+        for ch, mid, inc, stage, reason, needs_photo, importance in rows
     ]
 
 

@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .classifier import BATCH_SIZE, GeminiClassifier
 from .collector import collect_all, collection_since
@@ -19,6 +21,7 @@ from .config import Config
 from .dedup import find_copypaste_clusters
 from .filtering import filter_posts
 from .history_dedup import HISTORY_RUNS_WINDOW, filter_against_history
+from .layout import render_pages
 from .paraphrase_dedup import GeminiEmbedder, find_paraphrase_clusters
 from .storage import (
     Post,
@@ -30,6 +33,8 @@ from .storage import (
     save_outcomes,
     save_posts,
 )
+
+logger = logging.getLogger(__name__)
 
 Key = tuple[str, int]
 
@@ -46,6 +51,12 @@ class PostOutcome:
     # можно её добавить. Известно только для постов, дошедших до
     # LLM-классификации; для остальных — False по умолчанию.
     needs_photo: bool = False
+    # Оценка значимости от LLM (1-5, см. classifier.py) — Этап 3 использует
+    # её, чтобы решить, что печатать в первую очередь, что сокращать, а что
+    # выбросить, если всё не помещается в фиксированный номер полос.
+    # Известна только для постов, дошедших до LLM-классификации; 0 —
+    # неизвестно (пост отсеян раньше, либо прогон сделан до появления поля).
+    importance: int = 0
 
 
 @dataclass(frozen=True)
@@ -149,11 +160,13 @@ def _classify_posts(
     decisions = classifier.classify(after_copypaste)
     news: list[Post] = []
     needs_photo_by_key: dict[Key, bool] = {}
+    importance_by_key: dict[Key, int] = {}
     for p in after_copypaste:
         d = decisions[_key(p)]
         if d.is_news:
             news.append(p)
             needs_photo_by_key[_key(p)] = d.needs_photo
+            importance_by_key[_key(p)] = d.importance
         else:
             outcomes[_key(p)] = PostOutcome(p, False, "classification", d.reason)
 
@@ -172,6 +185,7 @@ def _classify_posts(
         outcomes[_key(p)] = PostOutcome(
             p, True, "final", "прошёл все этапы отбора",
             needs_photo=needs_photo_by_key.get(_key(p), False),
+            importance=importance_by_key.get(_key(p), 0),
         )
 
     return [outcomes[_key(p)] for p in posts]
@@ -217,7 +231,7 @@ def save_run(
         conn,
         run_id,
         [
-            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.needs_photo)
+            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.needs_photo, o.importance)
             for o in outcomes
         ],
     )
@@ -228,9 +242,108 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
     """Восстанавливает PostOutcome сохранённого прогона (без обращения к LLM)."""
     posts_by_key = {_key(p): p for p in load_posts(conn)}
     result = []
-    for channel, message_id, included, stage, reason, needs_photo in load_outcomes(conn, run_id):
+    for channel, message_id, included, stage, reason, needs_photo, importance in load_outcomes(conn, run_id):
         post = posts_by_key.get((channel, message_id))
         if post is None:
             continue  # пост удалён из posts — не должно происходить, но не валим отчёт
-        result.append(PostOutcome(post, included, stage, reason, needs_photo=needs_photo))
+        result.append(PostOutcome(post, included, stage, reason, needs_photo=needs_photo, importance=importance))
     return result
+
+
+# Печатная газета — фиксированный номер, не бесконечная лента (Этап 3, по
+# итогам ревью пользователя: "четыре листа А4, повёрнутые горизонтально").
+NEWSPAPER_MAX_PAGES = 4
+# Не пытаемся сократить нейронкой то, что и так значимо ниже среднего —
+# такое просто выбрасывается из номера, если не влезло.
+IMPORTANCE_DROP_THRESHOLD = 2
+SHORTEN_TARGET_SENTENCES = 3
+# Короче этого сокращать почти нечего — смысла звать LLM нет, такой пост
+# либо влезает как есть, либо выбрасывается наравне с неважными.
+SHORTEN_MIN_CHARS = 400
+
+
+@dataclass(frozen=True)
+class NewspaperResult:
+    pages: list[Path]
+    dropped: list[Post]  # не поместились в фиксированный номер и не были сокращены
+    shortened_count: int  # сколько новостей сократила нейронка ради места
+
+
+def build_newspaper(
+    config: Config,
+    outcomes: list[PostOutcome],
+    out_dir: Path,
+    basename: str,
+    run_date: datetime,
+    max_pages: int = NEWSPAPER_MAX_PAGES,
+) -> NewspaperResult:
+    """Собирает печатный номер фиксированного объёма (не больше max_pages
+    альбомных полос A4) из уже прошедших отбор новостей (Этапы 1-2).
+
+    Раскладка — по LLM-оценке значимости (importance, см. classifier.py и
+    _CLASSIFICATION_INSTRUCTION): самое важное печатается в первую очередь
+    и получает более крупную плитку (см. layout._assign_tiers). То, что не
+    поместилось в отведённый объём:
+    - если оно достаточно значимо (importance > IMPORTANCE_DROP_THRESHOLD)
+      и достаточно длинное, чтобы сокращение было осмысленным — сокращается
+      нейронкой (GeminiClassifier.shorten) и полоса собирается заново;
+    - иначе — выбрасывается из номера целиком.
+
+    Каждая попытка — полный проход layout.render_pages с нуля (не только
+    "довёрстка" последней полосы): дешевле по коду и, поскольку номер
+    ограничен четырьмя полосами, достаточно быстро на практике."""
+    included = [o for o in outcomes if o.included]
+    if not included:
+        return NewspaperResult([], [], 0)
+
+    importance_by_key: dict[Key, int] = {_key(o.post): o.importance for o in included}
+    posts = [o.post for o in included]
+
+    classifier: GeminiClassifier | None = None
+    already_shortened: set[Key] = set()
+    dropped: list[Post] = []
+    shortened_count = 0
+
+    while True:
+        out_paths, leftover = render_pages(
+            posts, out_dir, basename=basename, run_date=run_date,
+            page_size="A4", landscape=True, max_pages=max_pages,
+            importance_by_key=importance_by_key,
+        )
+        if not leftover:
+            if dropped:
+                logger.info(
+                    "номер собран: %d стр., сокращено=%d, выброшено из-за нехватки места=%d",
+                    len(out_paths), shortened_count, len(dropped),
+                )
+            return NewspaperResult(out_paths, dropped, shortened_count)
+
+        to_shorten_keys = {
+            _key(p)
+            for p in leftover
+            if importance_by_key.get(_key(p), 0) > IMPORTANCE_DROP_THRESHOLD
+            and _key(p) not in already_shortened
+            and len(p.text) > SHORTEN_MIN_CHARS
+        }
+
+        if to_shorten_keys:
+            to_shorten = [p for p in leftover if _key(p) in to_shorten_keys]
+            if classifier is None:
+                classifier = GeminiClassifier(config)
+            shortened_texts = classifier.shorten(to_shorten, target_sentences=SHORTEN_TARGET_SENTENCES)
+            already_shortened.update(to_shorten_keys)
+            shortened_count += len(shortened_texts)
+            logger.info("сокращено нейронкой %d новостей ради места в номере", len(shortened_texts))
+            posts = [
+                replace(p, text=shortened_texts[_key(p)]) if _key(p) in shortened_texts else p
+                for p in posts
+            ]
+            continue
+
+        # Сокращать больше нечего (недостаточно значимо или уже пробовали) —
+        # оставшееся выбрасывается из номера.
+        dropped.extend(leftover)
+        leftover_keys = {_key(p) for p in leftover}
+        posts = [p for p in posts if _key(p) not in leftover_keys]
+        if not posts:
+            return NewspaperResult(out_paths, dropped, shortened_count)

@@ -8,6 +8,11 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "google-genai>=2.24.0",
+    # Закреплено на 1.50.0: более новые версии Playwright (1.5x+) больше не
+    # публикуют сборки Chromium под macOS 12 (Monterey) — именно она стоит на
+    # рабочем ПК ("ERROR: Playwright does not support chromium on mac12" на
+    # 1.63.0). Поднимать версию — только вместе с обновлением macOS.
+    "playwright==1.50.0",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",

@@ -23,7 +23,7 @@ import time
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import Config
 from .storage import Post
@@ -78,6 +78,25 @@ _CLASSIFICATION_INSTRUCTION = (
     "главный аргумент, а не просто иллюстрирует уже полностью описанный "
     "словами факт). Если пост и без фото содержит полный, самодостаточный "
     "текст новости (фото там просто иллюстрация) — needs_photo=false.\n\n"
+    "Также для каждого поста оцени importance — насколько значимо само "
+    "СОБЫТИЕ (не длина и не качество текста о нём) относительно обычного "
+    "новостного потока, от 1 до 5:\n"
+    "5 — событие федерального/международного масштаба или с серьёзными "
+    "последствиями для большого числа людей (крупная катастрофа, отставка "
+    "первого лица, начало/окончание войны и т.п.);\n"
+    "4 — заметное событие городского/отраслевого масштаба, интересное "
+    "широкой аудитории (крупный релиз известного продукта, резонансное "
+    "преступление, важное судебное решение);\n"
+    "3 — обычная новость дня: типичное происшествие, рутинное решение "
+    "чиновников, стандартный анонс — то, что и составляет большую часть "
+    "новостной ленты;\n"
+    "2 — новость с узкой аудиторией или низкой значимостью (локальная "
+    "деталь, второстепенное уточнение, нишевая тема);\n"
+    "1 — почти не новость, проходит по формальным признакам, но едва ли "
+    "кому-то будет интересна на следующий день.\n"
+    "Короткая заметка о крупной катастрофе получает более высокую оценку, "
+    "чем длинный подробный разбор локального курьёза — длина текста не "
+    "аргумент ни за, ни против.\n\n"
     "Верни решение по каждому посту из списка, сохранив его index и ничего не "
     "пропустив."
 )
@@ -101,6 +120,7 @@ class ClassificationItem(BaseModel):
     index: int
     is_news: bool
     needs_photo: bool
+    importance: int = Field(ge=1, le=5)
     reason: str
 
 
@@ -174,6 +194,41 @@ class ClusterKeepDecision(BaseModel):
 
 class ClusterKeepBatch(BaseModel):
     decisions: list[ClusterKeepDecision]
+
+
+def _build_shorten_instruction(target_sentences: int) -> str:
+    return (
+        _INJECTION_DEFENSE + "\n\n"
+        "Тебе даны новостные посты, которые нужно сократить для печати на "
+        "физически ограниченной газетной полосе — места не хватает на все "
+        "посты целиком. Для каждого поста верни:\n"
+        "- headline: короткий газетный заголовок сути новости (одно "
+        "предложение или меньше, без точки на конце, без кавычек-обрамления "
+        "вокруг всего заголовка);\n"
+        "- short_text: сам пост короче, сохранив ВСЕ ключевые факты (кто, "
+        "что, когда, цифры, место) — убирай многословность, повторы, "
+        "второстепенные детали и цитаты, которые не добавляют новых "
+        f"фактов. Целевая длина — примерно {target_sentences} предложения, "
+        "но если для сохранения ключевых фактов нужно чуть больше — не в "
+        "ущерб фактам. Не повторяй headline дословно первым предложением "
+        "short_text — тело должно раскрывать заголовок, а не дублировать "
+        "его.\n\n"
+        "Не выдумывай и не досочиняй ничего от себя, не меняй факты и "
+        "цифры. Пиши в том же нейтральном новостном стиле, без своих "
+        "оценок и комментариев.\n\n"
+        "Верни headline и short_text по каждому посту, сохранив его index, "
+        "ничего не пропустив."
+    )
+
+
+class ShortenedItem(BaseModel):
+    index: int
+    headline: str
+    short_text: str
+
+
+class ShortenedBatch(BaseModel):
+    items: list[ShortenedItem]
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -408,3 +463,39 @@ class GeminiClassifier:
                 time.sleep(_INTER_BATCH_DELAY_SECONDS)
 
         return resolved
+
+    def shorten_batch(self, posts: list[Post], target_sentences: int) -> list[ShortenedItem]:
+        contents = _build_batch_prompt(posts)
+        instruction = _build_shorten_instruction(target_sentences)
+        parsed = self._generate_structured(contents, instruction, ShortenedBatch)
+        assert isinstance(parsed, ShortenedBatch)
+        return parsed.items
+
+    def shorten(self, posts: list[Post], target_sentences: int = 3) -> dict[tuple[str, int], str]:
+        """Сокращает посты (Этап 3: втискивание в фиксированный бюджет
+        полос) пачками по BATCH_SIZE. Возвращает {(channel, message_id):
+        сокращённый_текст} — только для постов, которые реально попали в
+        ответ модели; вызывающий код сам решает, что делать, если для
+        какого-то поста сокращения не нашлось (например, оставить как есть).
+
+        Текст форматируется как "**headline**\\n\\nshort_text" — тот же
+        markdown-формат жирного лида, что и у обычных постов из Telethon
+        (см. layout._split_headline). Без этого у сокращённых постов не
+        было явной границы заголовок/тело: заголовок доставался эвристикой
+        по первому абзацу, и если сокращённый текст оказывался одним
+        длинным предложением (>200 знаков), эвристика не находила короткий
+        первый абзац и оставляла тело как дубликат заголовка целиком —
+        проверено на реальном сокращении (пример: "Gallup совместно с
+        Microsoft..." повторялось и в заголовке, и первой фразой тела)."""
+        results: dict[tuple[str, int], str] = {}
+        for start in range(0, len(posts), BATCH_SIZE):
+            batch = posts[start : start + BATCH_SIZE]
+            for item in self.shorten_batch(batch, target_sentences):
+                if 0 <= item.index < len(batch):
+                    post = batch[item.index]
+                    headline = item.headline.strip()
+                    body = item.short_text.strip()
+                    results[(post.channel, post.message_id)] = f"**{headline}**\n\n{body}"
+            if start + BATCH_SIZE < len(posts):
+                time.sleep(_INTER_BATCH_DELAY_SECONDS)
+        return results
