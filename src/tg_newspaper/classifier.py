@@ -18,7 +18,6 @@ Worker — см. cloudflare-worker.js и README, раздел "Обход гео
 from __future__ import annotations
 
 import logging
-import re
 import time
 
 from google import genai
@@ -26,6 +25,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from .config import Config
+from .gemini_retry import is_transient, retry_delay_seconds
 from .storage import Post
 
 logger = logging.getLogger(__name__)
@@ -43,8 +43,6 @@ BATCH_SIZE = 25
 # получал 429 уже через ~6с после первого. Пауза между батчами и уважение к
 # retryDelay из ответа API снимают эту проблему без ручного вмешательства.
 _INTER_BATCH_DELAY_SECONDS = 3.0
-_DEFAULT_RETRY_DELAY_SECONDS = 15.0
-_MAX_RETRY_DELAY_SECONDS = 60.0
 _MAX_ROUNDS = 2  # сколько раз обойти список моделей, если все подряд отвечают "попробуй позже"
 
 # Посты — недоверенные внешние данные из публичных каналов, а не инструкции модели.
@@ -71,13 +69,24 @@ _CLASSIFICATION_INSTRUCTION = (
     "информационного повода; вопрос к читателям или просьба (например, "
     "прислать что-то в комментарии); пост, понятный только по фото/видео, где "
     "сам текст не несёт фактической информации.\n\n"
-    "Отдельно для каждого поста определи needs_photo — правда ли текст поста "
-    "БЕЗ фото/видео неполон или непонятен читателю: описывает что-то, что "
-    "нужно увидеть (например, \"на этом участке видно, как...\", \"посмотрите "
-    "на эти кадры\", пост ссылается на визуальное свидетельство как на "
-    "главный аргумент, а не просто иллюстрирует уже полностью описанный "
-    "словами факт). Если пост и без фото содержит полный, самодостаточный "
-    "текст новости (фото там просто иллюстрация) — needs_photo=false.\n\n"
+    "Отдельно для каждого поста определи photo_relevance — насколько "
+    "печати в газете помогло бы именно ФОТО (не видео: если по тексту "
+    "похоже, что вложение — видео/кружок/гиф, а не фото, оценивай так, "
+    "будто вложения нет вообще). Сами фото тебе не передаются — суди "
+    "только по тому, как текст поста ссылается на визуальный ряд. Три "
+    "степени:\n"
+    "1 — фото не нужно и не было бы уместно: пост не подразумевает "
+    "никакого визуального ряда (рассуждение, цитата, чисто текстовая "
+    "новость вроде решения/цифры/заявления).\n"
+    "2 — фото было бы уместно и приятно увидеть, но смысл текста и без "
+    "него полностью сохраняется: пост объективно сопровождается фото "
+    "(с места события, товар, скриншот и т.п.), но фото там просто "
+    "иллюстрация уже полностью описанного словами факта.\n"
+    "3 — без фото теряется существенная часть смысла: пост ссылается на "
+    "визуальное свидетельство как на главный аргумент (например, \"на "
+    "этом участке видно, как...\", \"посмотрите на эти кадры\") или "
+    "описывает что-то, что по-настоящему нужно увидеть, а не только "
+    "прочитать.\n\n"
     "Также для каждого поста оцени importance — насколько значимо само "
     "СОБЫТИЕ (не длина и не качество текста о нём) относительно обычного "
     "новостного потока, от 1 до 5:\n"
@@ -119,7 +128,7 @@ _BEST_VERSION_INSTRUCTION = (
 class ClassificationItem(BaseModel):
     index: int
     is_news: bool
-    needs_photo: bool
+    photo_relevance: int = Field(ge=1, le=3)
     importance: int = Field(ge=1, le=5)
     reason: str
 
@@ -231,38 +240,6 @@ class ShortenedBatch(BaseModel):
     items: list[ShortenedItem]
 
 
-def _is_transient(exc: Exception) -> bool:
-    """Временная ошибка модели — есть смысл попробовать другую модель."""
-    code = getattr(exc, "code", None)
-    if code in (429, 500, 502, 503, 504):
-        return True
-    text = str(exc).lower()
-    return any(
-        s in text
-        for s in (
-            "resource_exhausted", "quota", "429", "503", "unavailable",
-            "high demand", "timeout", "timed out", "connection",
-            "failed_precondition", "location is not supported",
-        )
-    )
-
-
-def _retry_delay_seconds(exc: Exception) -> float:
-    """Достаёт retryDelay из тела ответа API (например, '16s' в RetryInfo);
-    если распарсить не удалось — разумная пауза по умолчанию."""
-    details = getattr(exc, "details", None)
-    try:
-        error_details = details.get("error", {}).get("details", [])
-        for d in error_details:
-            if str(d.get("@type", "")).endswith("RetryInfo"):
-                match = re.match(r"([\d.]+)", str(d.get("retryDelay", "")))
-                if match:
-                    return min(float(match.group(1)) + 1.0, _MAX_RETRY_DELAY_SECONDS)
-    except (AttributeError, TypeError, ValueError):
-        pass
-    return _DEFAULT_RETRY_DELAY_SECONDS
-
-
 def _build_batch_prompt(posts: list[Post]) -> str:
     lines = ["Посты для классификации:", ""]
     for i, post in enumerate(posts):
@@ -320,8 +297,8 @@ class GeminiClassifier:
                         model=model, contents=contents, config=gen_config,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    if _is_transient(exc):
-                        delay = _retry_delay_seconds(exc)
+                    if is_transient(exc):
+                        delay = retry_delay_seconds(exc)
                         logger.warning(
                             "Модель %s недоступна (%s), жду %.0fс и пробую следующую",
                             model, str(exc)[:70], delay,

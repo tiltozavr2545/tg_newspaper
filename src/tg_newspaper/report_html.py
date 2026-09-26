@@ -64,7 +64,11 @@ STYLE = """
            font-weight: 600; white-space: nowrap; }
   .badge.in { background: #e3f6e5; color: #1a7a2e; }
   .badge.out { background: #fbe8e8; color: #b02a2a; }
-  .badge.photo { background: #fff3d6; color: #8a5a00; }
+  .badge.photo-unknown { background: transparent; color: #aaa; border: 1px dashed #ccc;
+                          font-weight: 400; }
+  .badge.photo-none { background: #eef1f5; color: #55606b; }
+  .badge.photo-nice { background: #fff3d6; color: #8a5a00; }
+  .badge.photo-essential { background: #fde2df; color: #a3231b; }
   .text-cell { max-width: 480px; }
   .reason-cell { max-width: 320px; color: #444; }
   .chan { color: #666; font-size: 12px; }
@@ -126,7 +130,19 @@ def _row_html(outcome: PostOutcome) -> str:
     stage = STAGE_LABELS.get(outcome.stage, outcome.stage)
     text = _text_html(p.text)
     reason = html.escape(outcome.reason)
-    photo_badge = '<span class="badge photo">📷 нужно фото</span>' if outcome.needs_photo else ""
+    # photo_relevance у отсеянных постов — заглушка по умолчанию (1), а не
+    # настоящая оценка LLM: до классификации такие посты не доходят (см.
+    # PostOutcome.photo_relevance в pipeline.py). Показываем отдельную
+    # нейтральную заглушку, а не один из трёх реальных уровней, чтобы не
+    # выдавать её за решение модели.
+    if not outcome.included:
+        photo_badge = '<span class="badge photo-unknown">— не оценивалось</span>'
+    elif outcome.photo_relevance >= 3:
+        photo_badge = '<span class="badge photo-essential">📷 без фото теряется смысл</span>'
+    elif outcome.photo_relevance == 2:
+        photo_badge = '<span class="badge photo-nice">📷 фото уместно</span>'
+    else:
+        photo_badge = '<span class="badge photo-none">📷 фото не нужно</span>'
     return f"""
     <tr data-status="{status}">
       <td>{p.posted_at.isoformat(timespec="minutes")}</td>

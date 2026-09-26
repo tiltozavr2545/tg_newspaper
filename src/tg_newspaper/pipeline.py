@@ -45,12 +45,12 @@ class PostOutcome:
     included: bool
     stage: str  # "heuristic" | "copypaste" | "classification" | "paraphrase" | "final"
     reason: str
-    # LLM решила, что без фото/видео текст поста неполон или непонятен
-    # (см. _CLASSIFICATION_INSTRUCTION в classifier.py) — сигнал для будущей
-    # вёрстки (Этап 3), что этому посту точно нужна картинка, а не просто
-    # можно её добавить. Известно только для постов, дошедших до
-    # LLM-классификации; для остальных — False по умолчанию.
-    needs_photo: bool = False
+    # Оценка LLM, насколько посту помогло бы именно фото (не видео) — три
+    # степени (см. _CLASSIFICATION_INSTRUCTION в classifier.py): 1 — не
+    # нужно, 2 — уместно, но смысл не теряется, 3 — без фото теряется
+    # существенная часть смысла. Известна только для постов, дошедших до
+    # LLM-классификации; для остальных — 1 (не нужно) по умолчанию.
+    photo_relevance: int = 1
     # Оценка значимости от LLM (1-5, см. classifier.py) — Этап 3 использует
     # её, чтобы решить, что печатать в первую очередь, что сокращать, а что
     # выбросить, если всё не помещается в фиксированный номер полос.
@@ -159,13 +159,13 @@ def _classify_posts(
 
     decisions = classifier.classify(after_copypaste)
     news: list[Post] = []
-    needs_photo_by_key: dict[Key, bool] = {}
+    photo_relevance_by_key: dict[Key, int] = {}
     importance_by_key: dict[Key, int] = {}
     for p in after_copypaste:
         d = decisions[_key(p)]
         if d.is_news:
             news.append(p)
-            needs_photo_by_key[_key(p)] = d.needs_photo
+            photo_relevance_by_key[_key(p)] = d.photo_relevance
             importance_by_key[_key(p)] = d.importance
         else:
             outcomes[_key(p)] = PostOutcome(p, False, "classification", d.reason)
@@ -184,7 +184,7 @@ def _classify_posts(
     for p in final_news:
         outcomes[_key(p)] = PostOutcome(
             p, True, "final", "прошёл все этапы отбора",
-            needs_photo=needs_photo_by_key.get(_key(p), False),
+            photo_relevance=photo_relevance_by_key.get(_key(p), 1),
             importance=importance_by_key.get(_key(p), 0),
         )
 
@@ -231,7 +231,7 @@ def save_run(
         conn,
         run_id,
         [
-            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.needs_photo, o.importance)
+            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.photo_relevance, o.importance)
             for o in outcomes
         ],
     )
@@ -242,11 +242,16 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
     """Восстанавливает PostOutcome сохранённого прогона (без обращения к LLM)."""
     posts_by_key = {_key(p): p for p in load_posts(conn)}
     result = []
-    for channel, message_id, included, stage, reason, needs_photo, importance in load_outcomes(conn, run_id):
+    for channel, message_id, included, stage, reason, photo_relevance, importance in load_outcomes(conn, run_id):
         post = posts_by_key.get((channel, message_id))
         if post is None:
             continue  # пост удалён из posts — не должно происходить, но не валим отчёт
-        result.append(PostOutcome(post, included, stage, reason, needs_photo=needs_photo, importance=importance))
+        result.append(
+            PostOutcome(
+                post, included, stage, reason,
+                photo_relevance=photo_relevance, importance=importance,
+            )
+        )
     return result
 
 

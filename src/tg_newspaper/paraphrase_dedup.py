@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 
 from google import genai
 from google.genai import types
 
 from .config import Config
+from .gemini_retry import is_transient, retry_delay_seconds
 from .storage import Post
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,16 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 
 # Лимит Gemini API на batchEmbedContents — максимум текстов в одном запросе.
 EMBED_BATCH_SIZE = 100
+
+# embed_content живёт на отдельной, куда более тесной бесплатной квоте, чем
+# generateContent (100 запросов/мин против куда большего лимита на текст) —
+# на реальном прогоне с двумя вызовами find_paraphrase_clusters +
+# filter_against_history подряд это укладывалось в 429 без единого ретрая
+# (сама библиотека google-genai ретраит только сетевые сбои, не квоту).
+# Модели на замену нет (эмбеддинг только один), поэтому просто ждём и
+# пробуем тот же запрос снова — та же логика ожидания retryDelay, что и в
+# classifier.py._generate_structured.
+_MAX_RETRIES = 5
 
 # Порог косинусного сходства эмбеддингов для черновой группировки кандидатов
 # в дубли (не финальное решение — см. предупреждение в шапке файла).
@@ -71,22 +83,40 @@ class GeminiEmbedder:
         )
         self._client = genai.Client(api_key=config.gemini_api_key, http_options=http_options)
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Возвращает вектор для каждого текста, в том же порядке."""
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[start : start + EMBED_BATCH_SIZE]
-            response = self._client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=batch,
-                config=types.EmbedContentConfig(task_type="SEMANTIC_SIMILARITY"),
-            )
+    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                response = self._client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=batch,
+                    config=types.EmbedContentConfig(task_type="SEMANTIC_SIMILARITY"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                if is_transient(exc):
+                    delay = retry_delay_seconds(exc)
+                    logger.warning(
+                        "embed_content недоступен (%s), жду %.0fс и пробую снова",
+                        str(exc)[:70], delay,
+                    )
+                    last_exc = exc
+                    time.sleep(delay)
+                    continue
+                raise
             embeddings = response.embeddings or []
             if len(embeddings) != len(batch):
                 raise RuntimeError(
                     f"batchEmbedContents вернул {len(embeddings)} из {len(batch)}"
                 )
-            vectors.extend(e.values for e in embeddings)
+            return [e.values for e in embeddings]
+        raise last_exc or RuntimeError("embed_content не ответил")
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Возвращает вектор для каждого текста, в том же порядке."""
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), EMBED_BATCH_SIZE):
+            batch = texts[start : start + EMBED_BATCH_SIZE]
+            vectors.extend(self._embed_batch(batch))
             logger.info("эмбеддинги готовы: %d-%d из %d", start, start + len(batch), len(texts))
         return vectors
 
