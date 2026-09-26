@@ -16,3 +16,4 @@ wheels/
 data/
 logs/
 config/channels.yaml
+.claude/scheduled_tasks.lock
