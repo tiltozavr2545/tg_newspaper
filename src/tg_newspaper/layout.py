@@ -85,6 +85,17 @@ FULL_HEADER_BLOCK_MM = 37.0
 RUNNING_HEADER_BLOCK_MM = 9.0
 FOOTER_BLOCK_MM = 8.0
 
+# Сколько альбомных полос печатается на физическом принтере как один
+# непрерывный лист (см. render_pages): при landscape=True раскладка и рендер
+# ведутся сразу на весь склеенный лист (одна шапка, один колофон, одна
+# сплошная мозаика — переход между "полосами" внутри листа НЕ виден, в
+# отличие от перехода между отдельными листами), а нарезка на отдельные
+# альбомные PNG для печати на обычном A4-принтере происходит уже после
+# рендера, простым разрезанием готового изображения пополам (см. конец
+# render_pages) — по пожеланию пользователя: "чтобы выглядело как одна
+# страница с ровным переходом, но отдавать как картинки горизонтальные".
+SHEET_UNITS = 2
+
 # Ширина плитки (col span) по уровню важности — только ширина колонки и
 # типографика (кегль заголовка, буквица у lead), НЕ обрезка текста: полный
 # текст поста печатается всегда (см. _estimate_row_span), лишнее просто
@@ -763,31 +774,49 @@ def render_pages(
     importance_by_key: dict[tuple[str, int], int] | None = None,
 ) -> tuple[list[Path], list[Post]]:
     """Рендерит газету в одну или несколько PNG нужного физического размера
-    при заданном DPI — по файлу на полосу (`<basename>_1.png`,
-    `<basename>_2.png`, ...). Вьюпорт браузера выставляется в CSS-пикселях
-    под точный размер страницы, а device_scale_factor = dpi/96 отвечает за
-    плотность пикселей скриншота — итоговые PNG ложатся на лист 1:1, без
-    пересчёта на Этапе 4.
+    при заданном DPI. Вьюпорт браузера выставляется в CSS-пикселях под точный
+    размер страницы, а device_scale_factor = dpi/96 отвечает за плотность
+    пикселей скриншота — итоговые PNG ложатся на лист 1:1, без пересчёта на
+    Этапе 4.
 
-    Разбивка на страницы — не просто оценка по объёму текста: каждая
-    страница-кандидат реально рендерится в headless Chromium, и то, что не
-    влезло (см. _fit_page), по-настоящему переносится на следующую полосу.
-    Иначе (доверять только оценке по числу символов) — на практике
-    случается недооценка на конкретных постах, и текст обрезается
-    overflow:hidden молча, что ровно то, чего вся эта многостраничность
-    должна избегать (проверено на реальных данных — без этой проверки
-    несколько статей теряли последние строки).
+    При landscape=True печатный лист склеивается из SHEET_UNITS альбомных
+    полос (по умолчанию 2) — но не постфактум склейкой готовых картинок, а
+    ЕДИНЫМ проходом раскладки и рендера на весь склеенный лист сразу: одна
+    шапка (полная на первом листе / облегчённая на остальных), один колофон,
+    одна сплошная мозаика на всю высоту листа — переход между "полосами"
+    внутри листа никак не выделен, лист выглядит как одна непрерывная
+    страница (по пожеланию пользователя: "чтобы это была буквально одна
+    страничка, полный ровный переход"). Наружу лист уходит нарезанным на
+    SHEET_UNITS альбомных PNG — простым разрезанием уже готового изображения
+    пополам по высоте (см. конец функции), а не отдельным рендером, — потому
+    что печатать целиком (без нарезки) не на чем: обычный принтер берёт A4,
+    а не склеенный вдвое лист. Из-за этого перенос статьи на стык двух
+    альбомных PNG внутри одного листа — ожидаемый и допустимый случай (как
+    перенос колонки на настоящей газетной полосе), в отличие от перехода
+    между разными листами, где всегда полная/облегчённая шапка. `basename_1.png`
+    и `basename_2.png` — это половинки первого листа (полосы 1+2), `basename_3.png`
+    и `basename_4.png` — половинки второго (полосы 3+4), и так далее.
 
-    max_pages — жёсткий потолок числа полос (Этап 3, по итогам ревью
-    пользователя: печатная газета — это фиксированный номер, не бесконечная
-    лента). Если после max_pages полос ещё что-то осталось, оно НЕ рендерится
-    вообще — возвращается вторым элементом кортежа как список Post, которые
-    не поместились, чтобы вызывающий код (см. build_newspaper в pipeline.py)
-    решил, что с ними делать: сократить нейронкой и попробовать снова или
-    выбросить из номера как недостаточно важные. importance_by_key
-    определяет и то, что попадёт в номер раньше (см. ordered ниже), и ширину
-    плитки каждой новости (_assign_tiers) — самая значимая становится
-    передовицей, а не просто самая длинная."""
+    Разбивка на страницы — не просто оценка по объёму текста: каждый
+    лист-кандидат реально рендерится в headless Chromium, и то, что не влезло
+    (см. _fit_page), по-настоящему переносится на следующий лист. Иначе
+    (доверять только оценке по числу символов) — на практике случается
+    недооценка на конкретных постах, и текст обрезается overflow:hidden молча,
+    что ровно то, чего вся эта многостраничность должна избегать (проверено
+    на реальных данных — без этой проверки несколько статей теряли последние
+    строки).
+
+    max_pages — жёсткий потолок числа альбомных полос (Этап 3, по итогам
+    ревью пользователя: печатная газета — это фиксированный номер, не
+    бесконечная лента); переводится в потолок числа склеенных листов как
+    ceil(max_pages / SHEET_UNITS). Если после этого потолка ещё что-то
+    осталось, оно НЕ рендерится вообще — возвращается вторым элементом
+    кортежа как список Post, которые не поместились, чтобы вызывающий код
+    (см. build_newspaper в pipeline.py) решил, что с ними делать: сократить
+    нейронкой и попробовать снова или выбросить из номера как недостаточно
+    важные. importance_by_key определяет и то, что попадёт в номер раньше
+    (см. ordered ниже), и ширину плитки каждой новости (_assign_tiers) —
+    самая значимая становится передовицей, а не просто самая длинная."""
     run_date = run_date or datetime.now()
     page_w, page_h = PAGE_SIZES_MM[page_size]
     if landscape:
@@ -800,12 +829,15 @@ def render_pages(
     if not articles:
         return [], []
 
+    sheet_units = SHEET_UNITS if landscape else 1
+    sheet_h = page_h * sheet_units
+
     avail_rows_first = int(
-        (page_h - PAGE_PADDING_TOP_MM - PAGE_PADDING_BOTTOM_MM - FULL_HEADER_BLOCK_MM - FOOTER_BLOCK_MM)
+        (sheet_h - PAGE_PADDING_TOP_MM - PAGE_PADDING_BOTTOM_MM - FULL_HEADER_BLOCK_MM - FOOTER_BLOCK_MM)
         // ROW_UNIT_MM
     )
     avail_rows_rest = int(
-        (page_h - PAGE_PADDING_TOP_MM - PAGE_PADDING_BOTTOM_MM - RUNNING_HEADER_BLOCK_MM - FOOTER_BLOCK_MM)
+        (sheet_h - PAGE_PADDING_TOP_MM - PAGE_PADDING_BOTTOM_MM - RUNNING_HEADER_BLOCK_MM - FOOTER_BLOCK_MM)
         // ROW_UNIT_MM
     )
 
@@ -824,7 +856,7 @@ def render_pages(
 
     style = _STYLE_TEMPLATE.format(
         page_w=page_w,
-        page_h=page_h,
+        page_h=sheet_h,
         pad_top=PAGE_PADDING_TOP_MM,
         pad_bottom=PAGE_PADDING_BOTTOM_MM,
         columns=columns,
@@ -837,9 +869,11 @@ def render_pages(
         return f'<!doctype html><html lang="ru"><head><meta charset="utf-8">{style}</head><body>{fragment}</body></html>'
 
     viewport_w = round(page_w * CSS_PX_PER_MM)
-    viewport_h = round(page_h * CSS_PX_PER_MM)
+    viewport_h = round(sheet_h * CSS_PX_PER_MM)
     scale = dpi / 96
     row_unit_px = ROW_UNIT_MM * CSS_PX_PER_MM  # в CSS-пикселях — тех же единицах, что getBoundingClientRect/scrollHeight
+
+    max_sheets = math.ceil(max_pages / sheet_units) if max_pages is not None else None
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_paths: list[Path] = []
@@ -850,7 +884,7 @@ def render_pages(
             # device_scale_factor), что и финальный скриншот, — иначе при
             # другом масштабе растеризации текст может перенестись по
             # строкам чуть иначе (округление ширины символов до физических
-            # пикселей отличается), и полоса, которая "влезла" на пробном
+            # пикселей отличается), и лист, который "влезал" на пробном
             # рендере при масштабе 1, реально обрежется на финальном при
             # масштабе 3+ (проверено на реальных данных — расхождение было
             # именно в один перенос строки на статью).
@@ -860,16 +894,16 @@ def render_pages(
             )
             probe_page = context.new_page()
 
-            pages: list[list[Article]] = []
+            sheets: list[list[Article]] = []
             remaining = ordered
             while remaining:
-                is_first = not pages
+                is_first = not sheets
                 avail_rows = avail_rows_first if is_first else avail_rows_rest
                 probe_page_num = 1 if is_first else 2
 
                 def build_probe(queue: list[Article], page_num: int = probe_page_num) -> str:
                     # page_num здесь только выбирает вид шапки (полная на
-                    # первой полосе / облегчённая на остальных, см.
+                    # первом листе / облегчённая на остальных, см.
                     # _page_html) — на реальную высоту .mosaic, которую мы
                     # измеряем в _fit_page, это и должно влиять.
                     return wrap(_page_html(queue, placements, page_num, page_num, date_label))
@@ -878,31 +912,52 @@ def render_pages(
                 fitted, remaining = _fill_page(
                     probe_page, remaining, placements, row_unit_px, columns, page_w, avail_rows, build_probe
                 )
-                pages.append(fitted)
+                sheets.append(fitted)
                 logger.info(
-                    "полоса %d: в очереди было=%d влезло=%d осталось_в_очереди=%d",
-                    len(pages), candidates_count, len(fitted), len(remaining),
+                    "лист %d: в очереди было=%d влезло=%d осталось_в_очереди=%d",
+                    len(sheets), candidates_count, len(fitted), len(remaining),
                 )
-                if max_pages is not None and len(pages) >= max_pages:
+                if max_sheets is not None and len(sheets) >= max_sheets:
                     break
 
-            # Если вышли по max_pages, а не по опустевшей очереди — то, что
+            # Если вышли по max_sheets, а не по опустевшей очереди — то, что
             # осталось, в номер не попадает вообще (см. докстринг). Отдаём
-            # исходные Post вызывающему коду вместо рендера лишних полос.
+            # исходные Post вызывающему коду вместо рендера лишних листов.
             leftover_posts = [a.post for a in remaining]
 
-            total_pages = len(pages)
-            pages_html = "\n".join(
-                _page_html(page_articles, placements, i + 1, total_pages, date_label)
-                for i, page_articles in enumerate(pages)
+            total_sheets = len(sheets)
+            sheets_html = "\n".join(
+                _page_html(sheet_articles, placements, i + 1, total_sheets, date_label)
+                for i, sheet_articles in enumerate(sheets)
             )
             final_page = context.new_page()
-            final_page.set_content(wrap(pages_html), wait_until="load")
+            # Вьюпорт под ВСЕ листы сразу (а не один, как для проб) — иначе
+            # Page.screenshot(clip=...) отказывается резать область за
+            # пределами вьюпорта на втором и последующих листах.
+            final_page.set_viewport_size({"width": viewport_w, "height": viewport_h * max(total_sheets, 1)})
+            final_page.set_content(wrap(sheets_html), wait_until="load")
             locator = final_page.locator(".page")
+            # Каждый .page здесь — уже целый склеенный лист (высотой в
+            # sheet_units альбомных полос, см. докстринг). Печатать его целым
+            # не на чем (принтер берёт A4), поэтому наружу отдаём его же,
+            # просто разрезанным на sheet_units альбомных PNG по высоте —
+            # без повторного рендера, тем же готовым изображением, так что
+            # никакого дополнительного шва разрезание не добавляет (в отличие
+            # от раздельного рендера двух полос, который и было решено
+            # заменить этим проходом).
+            file_index = 1
             for i in range(locator.count()):
-                out_path = out_dir / f"{basename}_{i + 1}.png"
-                locator.nth(i).screenshot(path=str(out_path))
-                out_paths.append(out_path)
+                box = locator.nth(i).bounding_box()
+                assert box is not None, "не удалось получить размеры отрендеренного листа"
+                slice_h = box["height"] / sheet_units
+                for j in range(sheet_units):
+                    out_path = out_dir / f"{basename}_{file_index}.png"
+                    final_page.screenshot(
+                        path=str(out_path),
+                        clip={"x": box["x"], "y": box["y"] + j * slice_h, "width": box["width"], "height": slice_h},
+                    )
+                    out_paths.append(out_path)
+                    file_index += 1
         finally:
             browser.close()
     return out_paths, leftover_posts
