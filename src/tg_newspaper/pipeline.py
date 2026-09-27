@@ -71,6 +71,11 @@ class PostOutcome:
     # personal не запрашивалась) либо прогон сделан до появления полей.
     personal_importance: int = 0
     final_importance: int = 0
+    # Путь к скачанному фото поста (collector.py._download_photo), если оно
+    # есть — при склейке (_merge_story_arcs) переносится на статью-якорь.
+    # Пустая строка — фото нет, не скачалось, либо photo_relevance = 1 (не
+    # нужно) и незачем было его искать.
+    photo_path: str = ""
     # Текст статьи, если он СИНТЕЗИРОВАН пайплайном (сейчас — только
     # результат _merge_story_arcs, склейка развивающейся истории одного
     # канала в одну статью), а не совпадает с сырым текстом поста из БД.
@@ -178,6 +183,7 @@ def _merge_story_arcs(
     outcomes: dict[Key, PostOutcome],
     importance_by_key: dict[Key, int],
     photo_relevance_by_key: dict[Key, int],
+    photo_path_by_key: dict[Key, str],
     merged_anchor_keys: set[Key],
     personal_by_key: dict[Key, int] | None = None,
 ) -> list[Post]:
@@ -234,6 +240,15 @@ def _merge_story_arcs(
             photo_relevance_by_key[_key(anchor)] = max(
                 photo_relevance_by_key.get(_key(p), 1) for p in group
             )
+            # Фото берём у поста группы с наибольшей собственной оценкой
+            # photo_relevance (а не обязательно у anchor — самый свежий пост
+            # истории не всегда тот, у которого было фото), первое попавшееся
+            # при равенстве оценок.
+            by_relevance = sorted(group, key=lambda p: -photo_relevance_by_key.get(_key(p), 1))
+            photo_path_by_key[_key(anchor)] = next(
+                (photo_path_by_key[_key(p)] for p in by_relevance if photo_path_by_key.get(_key(p))),
+                "",
+            )
             for p in group[:-1]:
                 outcomes[_key(p)] = PostOutcome(
                     p, False, "story_merge",
@@ -273,12 +288,14 @@ def _classify_posts(
     history: list[Post] | None = None,
     reader: ReaderContext | None = None,
     classifier: GeminiClassifier | None = None,
+    photo_path_by_key: dict[Key, str] | None = None,
 ) -> list[PostOutcome]:
     """Прогоняет эвристики → копипаст-дедуп → LLM-классификацию → дедуп
     пересказов → (если передан history) дедуп против уже опубликованного за
     последние собранные номера, над уже готовым списком постов (одного окна), и
     возвращает результат по каждому из них."""
     outcomes: dict[Key, PostOutcome] = {}
+    photo_path_by_key = dict(photo_path_by_key or {})
 
     candidates, filter_results = filter_posts(posts)
     for r in filter_results:
@@ -312,7 +329,7 @@ def _classify_posts(
     merged_anchor_keys: set[Key] = set()
     final_news = _merge_story_arcs(
         classifier, kept_groups, outcomes, importance_by_key, photo_relevance_by_key,
-        merged_anchor_keys, personal_by_key,
+        photo_path_by_key, merged_anchor_keys, personal_by_key,
     )
 
     if history:
@@ -335,6 +352,7 @@ def _classify_posts(
             personal_importance=personal,
             final_importance=final_importance(generic, personal, weight),
             merged_text=p.text if _key(p) in merged_anchor_keys else "",
+            photo_path=photo_path_by_key.get(_key(p), ""),
         )
 
     return [outcomes[_key(p)] for p in posts]
@@ -350,8 +368,9 @@ def run_pipeline_for_last_24h(config: Config) -> RunResult:
     since = collection_since(run_started_at)
 
     conn = connect(config.db_path)
-    collected = asyncio.run(collect_all(config, since))
+    collected, photo_path_by_key_raw = asyncio.run(collect_all(config, since))
     save_posts(conn, collected)
+    photo_path_by_key = {key: str(path) for key, path in photo_path_by_key_raw.items()}
 
     # Читаем окно заново из БД, а не берём collected напрямую — так в окно
     # попадают и посты, уже сохранённые предыдущим прогоном (не создаёт
@@ -366,7 +385,8 @@ def run_pipeline_for_last_24h(config: Config) -> RunResult:
     refresh_profile_summary(conn, classifier)
     reader = load_reader_context(conn)
     outcomes = _classify_posts(
-        config, posts, history=history, reader=reader, classifier=classifier
+        config, posts, history=history, reader=reader, classifier=classifier,
+        photo_path_by_key=photo_path_by_key,
     )
     run_id = save_run(conn, outcomes, run_started_at, since, run_started_at)
     return RunResult(run_id, since, run_started_at, outcomes)
@@ -391,7 +411,7 @@ def save_run(
             (
                 o.post.channel, o.post.message_id, o.included, o.stage, o.reason,
                 o.photo_relevance, o.importance, o.personal_importance,
-                o.final_importance, o.merged_text,
+                o.final_importance, o.merged_text, o.photo_path,
             )
             for o in outcomes
         ],
@@ -410,7 +430,7 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
     result = []
     for (
         channel, message_id, included, stage, reason, photo_relevance, importance,
-        personal_importance, final_importance_, merged_text,
+        personal_importance, final_importance_, merged_text, photo_path,
     ) in load_outcomes(conn, run_id):
         post = posts_by_key.get((channel, message_id))
         if post is None:
@@ -423,7 +443,7 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
                 photo_relevance=photo_relevance, importance=importance,
                 personal_importance=personal_importance,
                 final_importance=final_importance_,
-                merged_text=merged_text,
+                merged_text=merged_text, photo_path=photo_path,
             )
         )
     return result
@@ -483,6 +503,10 @@ def build_newspaper(
         return NewspaperResult([], [], 0, [])
 
     importance_by_key: dict[Key, int] = {_key(o.post): effective_importance(o) for o in included}
+    photo_relevance_by_key: dict[Key, int] = {_key(o.post): o.photo_relevance for o in included}
+    photo_path_by_key: dict[Key, str] = {
+        _key(o.post): o.photo_path for o in included if o.photo_path
+    }
     posts = [o.post for o in included]
 
     classifier: GeminiClassifier | None = None
@@ -495,6 +519,8 @@ def build_newspaper(
             posts, out_dir, basename=basename, run_date=run_date,
             page_size="A4", landscape=True, max_pages=max_pages,
             importance_by_key=importance_by_key,
+            photo_relevance_by_key=photo_relevance_by_key,
+            photo_path_by_key=photo_path_by_key,
         )
         if not leftover:
             if dropped:

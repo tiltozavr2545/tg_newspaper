@@ -10,7 +10,7 @@ headless Chromium (Playwright). На вход — уже отфильтрова�
 итогового PNG (см. render_pages).
 
 Вёрстка — мозаичная CSS-грид (не проточные column-count колонки): у каждой
-новости своя "важность" (lead/feature/brief) по объёму текста, и
+новости своя "важность" (lead/brief по LLM-оценке, см. _assign_tiers) и
 соответствующий размер плитки в сетке — вперемешку, а не ровными столбцами
 (так строят настоящие газетные полосы: broken-column/mosaic layout, а не
 единая колоночная лента). Ширина плитки определяет только типографику —
@@ -38,9 +38,11 @@ device_scale_factor, что и финальный скриншот — инач�
 
 from __future__ import annotations
 
+import base64
 import html
 import logging
 import math
+import mimetypes
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -68,8 +70,18 @@ DEFAULT_PAGE_SIZE = "A4"
 DEFAULT_DPI = 300
 DEFAULT_COLUMNS = 6  # число базовых колонок мозаичной сетки, не "столбцов текста"
 
-MASTHEAD_TITLE = "ГАЗЕТА ДНЯ"
-MASTHEAD_TAGLINE = "«Не всё, что скроллится, — новость» · тираж: 1 экземпляр"
+MASTHEAD_TITLE = "Тимоха Ведомости"  # смешанный регистр специально: .masthead h1 держит font-variant:small-caps, эффект виден только на строчных буквах
+MASTHEAD_TAGLINE = "Тираж: 1 экземпляр"
+
+# Минимальная оценка photo_relevance (см. classifier.py), при которой плитка
+# вообще получает фото — 1 ("не нужно") фото не показывает, даже если оно
+# скачалось. Фото бывает только у brief (решение пользователя: единственная
+# крупная lead-плитка номера держится на чистом тексте и типографике,
+# см. _should_show_photo).
+MIN_PHOTO_RELEVANCE_TO_SHOW = 2
+PHOTO_ASPECT_RATIO = 3 / 2  # ширина:высота — тот же кадр, что согласован в мокапе оформления
+PHOTO_ASPECT_CSS = "3 / 2"  # то же соотношение в синтаксисе CSS aspect-ratio
+PHOTO_CAPTION_ROWS = 1  # под подпись-титр под фото хватает одной row-unit'ы
 
 ROW_UNIT_MM = 5.2  # высота одного "кирпичика" мозаичной сетки
 
@@ -78,10 +90,11 @@ ROW_UNIT_MM = 5.2  # высота одного "кирпичика" мозаич
 # полосе), облегчённая "продолжение" шапка (на второй и далее — так делают
 # настоящие газеты: разворот с передовицей один, дальше просто внутренние
 # полосы) и колофон, одинаковый на каждой полосе. Измерено на реальном
-# рендере (заголовок + орнамент + дата + тэглайн + линейка ≈ 37мм).
+# рендере (заголовок в рамке + орнамент + дата + тэглайн + линейка ≈ 44мм —
+# рамка вокруг h1 (border+padding) добавила к прежним ≈37мм).
 PAGE_PADDING_TOP_MM = 10.0
 PAGE_PADDING_BOTTOM_MM = 8.0
-FULL_HEADER_BLOCK_MM = 37.0
+FULL_HEADER_BLOCK_MM = 44.0
 RUNNING_HEADER_BLOCK_MM = 9.0
 FOOTER_BLOCK_MM = 8.0
 
@@ -100,12 +113,11 @@ SHEET_UNITS = 2
 # типографика (кегль заголовка, буквица у lead), НЕ обрезка текста: полный
 # текст поста печатается всегда (см. _estimate_row_span), лишнее просто
 # уходит на следующую полосу через пагинацию (render_pages), а не отрезается
-# многоточием на месте. "Разнобой" получается из ширины плитки и реального
-# разброса длины новостей, а не из искусственного клампинга.
-LEAD_COL_SPAN = 4
-FEATURE_COL_SPANS = (3, 2)  # чередуются через одну плитку — сетка вразнобой
+# многоточием на месте. Всего два уровня (решение пользователя от
+# 2026-09-27: один крупный пост на весь номер, не три вперемешку размера) —
+# самый важный пост становится lead, все остальные — одного размера brief.
+LEAD_COL_SPAN = 3
 BRIEF_COL_SPAN = 2
-FEATURE_SLOTS = 4  # столько новостей (после лида) получают ширину feature; остальные — brief
 
 # Геометрия для оценки, сколько строк реально займёт текст поста в плитке
 # заданной ширины — чтобы row span считался по факту объёма текста, а не по
@@ -130,10 +142,10 @@ ROW_OVERHEAD = 2  # паддинги плитки + отступ под byline, 
 # больше, чем начинать с заведомо переполненной пробной полосы.
 PAGE_BUDGET_SAFETY_FACTOR = 0.9
 
-TIER_BODY_FONT_MM = {"lead": 3.4, "feature": 3.1, "brief": 2.9}
+TIER_BODY_FONT_MM = {"lead": 3.2, "brief": 2.9}
 TIER_BODY_LINE_HEIGHT = 1.4  # соответствует line-height в CSS для .card p
-TIER_HEADLINE_FONT_MM = {"lead": 7.2, "feature": 4.6, "brief": 3.7}
-TIER_HEADLINE_LINE_HEIGHT = {"lead": 1.12, "feature": 1.18, "brief": 1.2}
+TIER_HEADLINE_FONT_MM = {"lead": 5.6, "brief": 3.7}
+TIER_HEADLINE_LINE_HEIGHT = {"lead": 1.14, "brief": 1.2}
 
 _STYLE_TEMPLATE = """
 <style>
@@ -162,8 +174,20 @@ _STYLE_TEMPLATE = """
   .masthead {{ position: relative; flex: 0 0 auto; text-align: center; margin-bottom: 3mm; }}
   .masthead .ornament {{ letter-spacing: 5mm; font-size: 4mm; color: #444; }}
   .masthead h1 {{
-    margin: 1mm 0; font-size: 13mm; letter-spacing: 2mm;
+    display: inline-block;
+    margin: 2mm 0; padding: 2mm 9mm; font-size: 13mm; letter-spacing: 2mm;
     font-variant: small-caps; font-weight: 900;
+    /* Superclarendon Black (вес 900) — тот же вес, что в файле шрифта, без
+       синтеза: в отличие от PT Serif, у Superclarendon реально есть
+       начертание Black. Clarendon как жанр придумали в 1845-м специально
+       под жирные газетные заголовки — не просто "красивый шрифт". */
+    font-family: "Superclarendon", Georgia, "Times New Roman", serif;
+    /* Название в рамке, как жирные боксы-мастхеды у пульповых газет/комиксов
+       (Daily Bugle и т.п.) — двойная линия через border+outline с зазором,
+       без единой полезной функции, только чтобы название весило на полосе. */
+    border: 0.7mm solid #1a1a1a;
+    outline: 0.25mm solid #1a1a1a;
+    outline-offset: 1.1mm;
   }}
   .masthead .date {{
     font-size: 3.4mm; text-transform: uppercase; letter-spacing: 1.5mm; color: #333;
@@ -182,6 +206,34 @@ _STYLE_TEMPLATE = """
     color: #555; text-align: center; line-height: 1.35;
   }}
   .stamp span {{ font-size: 4.4mm; margin-bottom: 0.4mm; }}
+
+  /* Номер выпуска — пара к штампу с другой стороны шапки, на месте, где
+     раньше была шуточная цена (убрана по правке пользователя). Настоящие
+     газеты всегда нумеруют номер — у нас была дата, но не было счётчика
+     выпусков. */
+  .issue-box {{
+    position: absolute; top: -1mm; left: 0; width: 19mm;
+    border: 0.4mm solid #555; padding: 1.2mm 0;
+    display: flex; flex-direction: column; align-items: center;
+    font-size: 2.2mm; letter-spacing: 0.3mm; text-transform: uppercase;
+    color: #555; text-align: center; line-height: 1.3;
+  }}
+  .issue-box strong {{ font-size: 4mm; font-family: "Superclarendon", Georgia, serif; }}
+
+  /* Уголковые метки-крестики — отсылка к типографским меткам приводки на
+     настоящих печатных пробах. Функции ноль, но без них полоса выглядит
+     "экранной", а не "напечатанной" — та же логика, что у растровой
+     подложки бумаги и водяных знаков на плитках. */
+  .reg-mark {{
+    position: absolute; width: 3mm; height: 3mm; opacity: 0.4; pointer-events: none;
+  }}
+  .reg-mark::before, .reg-mark::after {{ content: ""; position: absolute; background: #1a1a1a; }}
+  .reg-mark::before {{ top: 50%; left: 0; width: 100%; height: 0.15mm; transform: translateY(-50%); }}
+  .reg-mark::after {{ left: 50%; top: 0; height: 100%; width: 0.15mm; transform: translateX(-50%); }}
+  .reg-mark.tl {{ top: 2.5mm; left: 2.5mm; }}
+  .reg-mark.tr {{ top: 2.5mm; right: 2.5mm; }}
+  .reg-mark.bl {{ bottom: 2.5mm; left: 2.5mm; }}
+  .reg-mark.br {{ bottom: 2.5mm; right: 2.5mm; }}
 
   /* Облегчённая шапка для второй и последующих полос — настоящий разворот
      с передовицей и штампом только один, дальше страницы идут как обычные
@@ -238,12 +290,38 @@ _STYLE_TEMPLATE = """
     font-size: 9mm; font-weight: 900; color: #000; opacity: 0.05;
     line-height: 1; pointer-events: none; z-index: 0;
   }}
-  .card.tier-lead::after {{ font-size: 26mm; bottom: -5mm; }}
-  .card.tier-feature::after {{ font-size: 14mm; bottom: -3mm; }}
+  .card.tier-lead::after {{ font-size: 18mm; bottom: -4mm; }}
   .card:nth-of-type(3n)::after {{ transform: rotate(-8deg); }}
   .card:nth-of-type(3n+1)::after {{ transform: rotate(6deg); }}
   .card:nth-of-type(3n+2)::after {{ transform: rotate(-2deg); }}
   .card-content {{ position: relative; z-index: 1; height: 100%; }}
+
+  /* Фото-врезка (только brief, photo_relevance >= 2, см. _should_show_photo)
+     — кадр бьётся в край плитки отрицательными полями, равными паддингу
+     .card, дальше текст идёт как обычно с тем же паддингом. Обработка —
+     имитация фототелеграфа/wirephoto (согласовано с пользователем):
+     ч/б + жёсткий контраст + горизонтальные сканлайны поверх, вместо
+     обычной фотографии. Реальный принтер цветной — это осознанный
+     стилистический выбор, не техническое ограничение. */
+  .card-photo {{
+    position: relative;
+    margin: -2.6mm -3mm 2mm;
+    overflow: hidden;
+    background-color: #333;
+  }}
+  .card-photo img {{
+    display: block; width: 100%; aspect-ratio: {photo_aspect};
+    object-fit: cover;
+    filter: grayscale(1) contrast(1.45) brightness(0.94);
+  }}
+  .card-photo::after {{
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(to bottom, rgba(0,0,0,.6) 0 0.3mm, transparent 0.3mm 0.9mm);
+    mix-blend-mode: multiply; opacity: .85;
+  }}
+  .photo-cutline {{
+    font-size: 2.1mm; font-style: italic; color: #777; margin: 0 0 1.4mm;
+  }}
 
   .byline {{
     font-size: 2.4mm; text-transform: uppercase; letter-spacing: 0.4mm;
@@ -254,14 +332,12 @@ _STYLE_TEMPLATE = """
     text-align: justify; hyphens: auto;
   }}
 
-  .card.tier-lead h2 {{ font-size: 7.2mm; line-height: 1.12; margin: 0 0 2mm; }}
+  .card.tier-lead h2 {{ font-size: 5.6mm; line-height: 1.14; margin: 0 0 2mm; }}
   .card.tier-lead {{ grid-column: span {lead_col}; }}
   .card.tier-lead p:first-of-type::first-letter {{
-    float: left; font-size: 11mm; line-height: 9mm; padding: 1mm 1.2mm 0 0;
+    float: left; font-size: 8.5mm; line-height: 7mm; padding: 1mm 1.2mm 0 0;
     font-weight: 900;
   }}
-
-  .card.tier-feature h2 {{ font-size: 4.6mm; line-height: 1.18; margin: 0 0 1.4mm; }}
 
   .card.tier-brief h2 {{ font-size: 3.7mm; line-height: 1.2; margin: 0 0 1mm; }}
   .card.tier-brief p {{ font-size: 2.9mm; }}
@@ -405,9 +481,39 @@ class Article:
     # попадёт в номер при ограничении на число полос, см. build_newspaper в
     # pipeline.py).
     importance: int = 0
+    # Оценка LLM (см. classifier.py), насколько посту помогло бы фото —
+    # определяет, показывать ли photo_data_uri вообще (см. _should_show_photo),
+    # не только его наличие: 1 ("не нужно") фото не ставит, даже если оно
+    # скачалось и лежит на диске.
+    photo_relevance: int = 1
+    # data:-URI уже прочитанного и base64-закодированного файла фото, либо
+    # None — нет фото/не скачалось/файл потерялся с диска. Кодируем один раз
+    # тут, а не в шаблоне: _fit_page перерисовывает HTML полосы много раз за
+    # проход подгонки (см. render_pages), а сам файл фото за это время не
+    # меняется. data:-URI, а не file://-путь — Chromium в контексте, куда
+    # содержимое загружено через set_content (не через реальную навигацию по
+    # file://), может отказаться грузить локальный файл как сторонний ресурс.
+    photo_data_uri: str | None = None
 
 
-def build_article(post: Post, importance: int = 0) -> Article:
+def _load_photo_data_uri(photo_path: str | None) -> str | None:
+    if not photo_path:
+        return None
+    path = Path(photo_path)
+    if not path.is_file():
+        logger.warning("photo_path не найден на диске, печатаю без фото: %s", photo_path)
+        return None
+    mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
+
+
+def build_article(
+    post: Post,
+    importance: int = 0,
+    photo_relevance: int = 1,
+    photo_path: str | None = None,
+) -> Article:
     headline_raw, body_raw = _split_headline(post.text)
     headline_html = _inline_markdown_to_html(html.escape(headline_raw))
     full_body_html = _paragraphs_html(body_raw)
@@ -421,23 +527,56 @@ def build_article(post: Post, importance: int = 0) -> Article:
         headline_char_count=len(headline_raw),
         body_char_count=len(body_raw),
         importance=importance,
+        photo_relevance=photo_relevance,
+        photo_data_uri=_load_photo_data_uri(photo_path),
+    )
+
+
+def _should_show_photo(tier: str, article: Article) -> bool:
+    """Фото — только у brief (решение пользователя от 2026-09-27: единственная
+    крупная lead-плитка номера держится на чистом тексте и типографике —
+    заголовок, буквица, — фото ей не положено ни при какой оценке
+    photo_relevance)."""
+    return (
+        tier == "brief"
+        and article.photo_data_uri is not None
+        and article.photo_relevance >= MIN_PHOTO_RELEVANCE_TO_SHOW
     )
 
 
 @dataclass(frozen=True)
 class _Placement:
-    tier: str  # "lead" | "feature" | "brief"
+    tier: str  # "lead" | "brief"
     col_span: int
     row_span: int
+
+
+def _tile_width_mm(col_span: int, columns: int, page_w: float) -> float:
+    """Полная физическая ширина плитки col_span колонок из columns — минус
+    поля страницы и зазоры мозаики, но БЕЗ вычета паддинга самой плитки (в
+    отличие от _text_width_mm): фото бьётся в край плитки через отрицательные
+    поля (см. .card-photo в _STYLE_TEMPLATE), так что его ширина — это полная
+    ширина плитки, а не ширина, доступная под текст."""
+    content_width = page_w - 2 * PAGE_SIDE_PADDING_MM - 2 * PAGE_BORDER_MM
+    col_width = (content_width - (columns - 1) * MOSAIC_GAP_MM) / columns
+    return col_width * col_span + (col_span - 1) * MOSAIC_GAP_MM
 
 
 def _text_width_mm(col_span: int, columns: int, page_w: float) -> float:
     """Ширина, доступная под текст в плитке шириной col_span колонок из
     columns — минус поля страницы, зазоры мозаики и паддинг самой плитки."""
-    content_width = page_w - 2 * PAGE_SIDE_PADDING_MM - 2 * PAGE_BORDER_MM
-    col_width = (content_width - (columns - 1) * MOSAIC_GAP_MM) / columns
-    span_width = col_width * col_span + (col_span - 1) * MOSAIC_GAP_MM
-    return span_width - 2 * CARD_PADDING_H_MM
+    return _tile_width_mm(col_span, columns, page_w) - 2 * CARD_PADDING_H_MM
+
+
+def _photo_row_span(col_span: int, columns: int, page_w: float) -> int:
+    """Сколько row-unit'ов займёт фото-врезка (см. _should_show_photo) при
+    заданной ширине плитки — кадр фиксированного соотношения сторон
+    (PHOTO_ASPECT_RATIO) на всю ширину плитки, плюс строка под подпись.
+    Только стартовая оценка для _seed_batch — реальную высоту, как и для
+    текста, подтверждает браузерный цикл подгонки (_fit_page)."""
+    width_mm = _tile_width_mm(col_span, columns, page_w)
+    height_mm = width_mm / PHOTO_ASPECT_RATIO
+    return math.ceil(height_mm / ROW_UNIT_MM) + PHOTO_CAPTION_ROWS
 
 
 def _rows_for_text(char_count: int, text_width_mm: float, font_size_mm: float, line_height: float) -> int:
@@ -460,21 +599,21 @@ def _estimate_row_span(tier: str, col_span: int, columns: int, page_w: float, ar
     body_rows = _rows_for_text(
         article.body_char_count, text_width, TIER_BODY_FONT_MM[tier], TIER_BODY_LINE_HEIGHT
     )
-    return ROW_OVERHEAD + headline_rows + body_rows
+    photo_rows = _photo_row_span(col_span, columns, page_w) if _should_show_photo(tier, article) else 0
+    return ROW_OVERHEAD + photo_rows + headline_rows + body_rows
 
 
 def _assign_tiers(
     articles: list[Article], columns: int, page_w: float, avail_rows_first: int
 ) -> dict[int, _Placement]:
-    """Разбивает новости на уровни важности по LLM-оценке (importance,
+    """Разбивает новости на два уровня важности по LLM-оценке (importance,
     длина текста — только тай-брейк при равной оценке): одна широкая
     "передовица" (самая значимая новость дня, а не просто самый длинный
-    пост), несколько плиток среднего размера, остальное — узкие плитки.
-    Ширина плитки определяет только typографику и ширину колонки — высота
-    везде считается по фактическому объёму текста (_estimate_row_span), так
-    что полный текст поста печатается всегда. Вперемешку по ширине, а не
-    ровными столбцами — то самое broken-column/mosaic-расположение
-    настоящих газетных полос. Возвращает {id(article): _Placement}."""
+    пост, и всегда ровно одна на весь номер — решение пользователя от
+    2026-09-27), всё остальное — плитки одного меньшего размера. Ширина
+    плитки определяет только typографику и ширину колонки — высота везде
+    считается по фактическому объёму текста (_estimate_row_span), так что
+    полный текст поста печатается всегда. Возвращает {id(article): _Placement}."""
     by_importance = sorted(articles, key=lambda a: (a.importance, a.word_count), reverse=True)
 
     placements: dict[int, _Placement] = {}
@@ -501,11 +640,6 @@ def _assign_tiers(
         lead_row = _estimate_row_span("lead", lead_col, columns, page_w, lead)
     placements[id(lead)] = _Placement("lead", lead_col, min(lead_row, avail_rows_first))
 
-    feature_pool, rest = rest[:FEATURE_SLOTS], rest[FEATURE_SLOTS:]
-    for i, a in enumerate(feature_pool):
-        col = FEATURE_COL_SPANS[i % len(FEATURE_COL_SPANS)]
-        placements[id(a)] = _Placement("feature", col, _estimate_row_span("feature", col, columns, page_w, a))
-
     for a in rest:
         placements[id(a)] = _Placement(
             "brief", BRIEF_COL_SPAN, _estimate_row_span("brief", BRIEF_COL_SPAN, columns, page_w, a)
@@ -519,9 +653,16 @@ def _article_html(article: Article, placement: _Placement) -> str:
     css_class = f"card tier-{placement.tier}"
     style = f'style="grid-column: span {placement.col_span}; grid-row: span {placement.row_span};"'
 
+    photo_html = ""
+    if _should_show_photo(placement.tier, article):
+        photo_html = f"""
+        <div class="card-photo"><img src="{article.photo_data_uri}" alt=""></div>
+        <div class="photo-cutline">Фото: {html.escape(article.channel)}</div>"""
+
     return f"""
     <div class="{css_class}" {style}>
       <div class="card-content">
+        {photo_html}
         <div class="byline">{html.escape(article.channel)} · {when}</div>
         <h2>{article.headline_html}</h2>
         {article.full_body_html}
@@ -730,12 +871,14 @@ def _page_html(
     page_num: int,
     total_pages: int,
     date_label: str,
+    issue_number: int = 0,
 ) -> str:
     cards_html = "\n".join(_article_html(a, placements[id(a)]) for a in page_articles)
 
     if page_num == 1:
         header_html = f"""
     <div class="masthead">
+      <div class="issue-box"><strong>№ {issue_number}</strong>выпуск</div>
       <div class="stamp"><span>&#9733;</span>Тимоха<br>Пресс</div>
       <div class="ornament">❧ ⁘ ✦ ⁘ ❧</div>
       <h1>{MASTHEAD_TITLE}</h1>
@@ -751,13 +894,19 @@ def _page_html(
 
     footer_suffix = f" · стр. {page_num}/{total_pages}" if total_pages > 1 else ""
 
+    reg_marks = (
+        '<div class="reg-mark tl"></div><div class="reg-mark tr"></div>'
+        '<div class="reg-mark bl"></div><div class="reg-mark br"></div>'
+    )
+
     return f"""
   <div class="page" data-page="{page_num}">
+    {reg_marks}
     {header_html}
     <div class="mosaic">
       {cards_html}
     </div>
-    <div class="colophon">TG Newspaper · собрано и свёрстано агентом Тимохи{footer_suffix}</div>
+    <div class="colophon">TG Newspaper · собрано и свёрстано в «Тимоха Пресс»{footer_suffix}</div>
   </div>"""
 
 
@@ -772,6 +921,9 @@ def render_pages(
     landscape: bool = False,
     max_pages: int | None = None,
     importance_by_key: dict[tuple[str, int], int] | None = None,
+    photo_relevance_by_key: dict[tuple[str, int], int] | None = None,
+    photo_path_by_key: dict[tuple[str, int], str] | None = None,
+    issue_number: int = 0,
 ) -> tuple[list[Path], list[Post]]:
     """Рендерит газету в одну или несколько PNG нужного физического размера
     при заданном DPI. Вьюпорт браузера выставляется в CSS-пикселях под точный
@@ -816,14 +968,38 @@ def render_pages(
     нейронкой и попробовать снова или выбросить из номера как недостаточно
     важные. importance_by_key определяет и то, что попадёт в номер раньше
     (см. ordered ниже), и ширину плитки каждой новости (_assign_tiers) —
-    самая значимая становится передовицей, а не просто самая длинная."""
+    самая значимая становится передовицей, а не просто самая длинная.
+
+    photo_relevance_by_key/photo_path_by_key — фото поста (см.
+    collector.py, pipeline._merge_story_arcs) и оценка LLM, насколько оно
+    нужно (classifier.py). Показывается только у brief-плиток с
+    photo_relevance >= MIN_PHOTO_RELEVANCE_TO_SHOW (см. _should_show_photo) —
+    у lead фото не бывает ни при какой оценке (решение пользователя: единственная
+    крупная плитка номера держится на чистом тексте). Обработка кадра — имитация
+    фототелеграфа/wirephoto (см. .card-photo в _STYLE_TEMPLATE), а не сама
+    фотография как есть — осознанный стилистический выбор, не техническое
+    ограничение принтера (он цветной).
+
+    issue_number — номер выпуска в углу шапки (.issue-box, на месте, где
+    раньше была шуточная цена). Пока не связан со счётчиком прогонов в БД —
+    вызывающий код (build_newspaper) его не передаёт, поэтому по умолчанию
+    всегда 0; параметр существует уже сейчас, чтобы наружное подключение
+    (например, к run_id из storage.py) было чистым добавлением одной строки,
+    без переделки сигнатуры."""
     run_date = run_date or datetime.now()
     page_w, page_h = PAGE_SIZES_MM[page_size]
     if landscape:
         page_w, page_h = page_h, page_w
     importance_by_key = importance_by_key or {}
+    photo_relevance_by_key = photo_relevance_by_key or {}
+    photo_path_by_key = photo_path_by_key or {}
     articles = [
-        build_article(p, importance=importance_by_key.get((p.channel, p.message_id), 0))
+        build_article(
+            p,
+            importance=importance_by_key.get((p.channel, p.message_id), 0),
+            photo_relevance=photo_relevance_by_key.get((p.channel, p.message_id), 1),
+            photo_path=photo_path_by_key.get((p.channel, p.message_id)),
+        )
         for p in posts
     ]
     if not articles:
@@ -862,6 +1038,7 @@ def render_pages(
         columns=columns,
         row_unit=ROW_UNIT_MM,
         lead_col=LEAD_COL_SPAN,
+        photo_aspect=PHOTO_ASPECT_CSS,
     )
     date_label = run_date.strftime("%d.%m.%Y")
 
@@ -906,7 +1083,7 @@ def render_pages(
                     # первом листе / облегчённая на остальных, см.
                     # _page_html) — на реальную высоту .mosaic, которую мы
                     # измеряем в _fit_page, это и должно влиять.
-                    return wrap(_page_html(queue, placements, page_num, page_num, date_label))
+                    return wrap(_page_html(queue, placements, page_num, page_num, date_label, issue_number))
 
                 candidates_count = len(remaining)
                 fitted, remaining = _fill_page(
@@ -927,7 +1104,7 @@ def render_pages(
 
             total_sheets = len(sheets)
             sheets_html = "\n".join(
-                _page_html(sheet_articles, placements, i + 1, total_sheets, date_label)
+                _page_html(sheet_articles, placements, i + 1, total_sheets, date_label, issue_number)
                 for i, sheet_articles in enumerate(sheets)
             )
             final_page = context.new_page()

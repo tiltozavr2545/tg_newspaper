@@ -28,6 +28,9 @@ DB_PATH_ENV = "TG_NEWSPAPER_DB"
 ENV_FILE_ENV = "TG_NEWSPAPER_ENV"
 CHANNELS_PATH_ENV = "TG_NEWSPAPER_CHANNELS"
 SESSION_DIR_ENV = "TG_NEWSPAPER_SESSION_DIR"
+# Фото постов скачиваются сюда при сборе (collector.py) — путь на файл живёт
+# дальше в pipeline_outcomes.photo_path (storage.py), сами файлы вне БД.
+MEDIA_DIR = REPO_ROOT / "data" / "media"
 
 # Период сбора — всегда фиксированные последние сутки от момента запуска.
 # Наверстывание пропущенных дней сознательно не делается: не напечаталось — значит не напечаталось,
@@ -63,6 +66,7 @@ class Config:
     session_name: str
     channels: list[str]
     db_path: Path
+    media_dir: Path
     # Gemini — нужен только для LLM-классификации (Этап 2 п.2), не для сбора/эвристик.
     # Пустой api_key — нормально для остального пайплайна; GeminiClassifier сам
     # откажет с понятной ошибкой, если его создать без ключа.
@@ -87,6 +91,7 @@ def load_config() -> Config:
         session_name=session_base(session_name),
         channels=channels,
         db_path=Path(os.environ[DB_PATH_ENV]) if os.environ.get(DB_PATH_ENV) else DB_PATH,
+        media_dir=MEDIA_DIR,
         gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
         gemini_base_url=os.environ.get("GEMINI_BASE_URL", "").strip().rstrip("/"),

@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS pipeline_outcomes (
     -- досклеечный текст, а не сводную статью, которую пайплайн реально
     -- отобрал для печати.
     merged_text TEXT NOT NULL DEFAULT '',
+    -- Путь к скачанному фото поста (collector.py), если оно есть и относится
+    -- к статье, которую отобрали для печати — сам файл лежит вне БД
+    -- (Config.media_dir), тут только путь, чтобы layout.py мог найти его и
+    -- при повторном открытии сохранённого прогона без обращения к Telegram.
+    -- Пустая строка (по умолчанию) — фото нет или прогон сделан до появления
+    -- этого поля.
+    photo_path TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (run_id, channel, message_id)
 );
 
@@ -238,6 +245,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE pipeline_outcomes ADD COLUMN merged_text TEXT NOT NULL DEFAULT ''"
         )
 
+    if "photo_path" not in outcome_columns:
+        conn.execute(
+            "ALTER TABLE pipeline_outcomes ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''"
+        )
+
     conn.commit()
 
 
@@ -292,18 +304,20 @@ def create_run(
 def save_outcomes(
     conn: sqlite3.Connection,
     run_id: int,
-    rows: list[tuple[str, int, bool, str, str, int, int, int, int, str]],
+    rows: list[tuple[str, int, bool, str, str, int, int, int, int, str, str]],
 ) -> None:
     """rows: (channel, message_id, included, stage, reason, photo_relevance,
-    importance, personal_importance, final_importance, merged_text)."""
+    importance, personal_importance, final_importance, merged_text, photo_path)."""
     conn.executemany(
         "INSERT INTO pipeline_outcomes "
         "(run_id, channel, message_id, included, stage, reason, photo_relevance, importance, "
-        "personal_importance, final_importance, merged_text) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "personal_importance, final_importance, merged_text, photo_path) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (run_id, ch, mid, int(inc), stage, reason, photo_relevance, importance, personal, final, merged_text)
-            for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final, merged_text in rows
+            (run_id, ch, mid, int(inc), stage, reason, photo_relevance, importance, personal, final,
+             merged_text, photo_path)
+            for (ch, mid, inc, stage, reason, photo_relevance, importance, personal, final,
+                 merged_text, photo_path) in rows
         ],
     )
     conn.commit()
@@ -326,16 +340,18 @@ def list_runs(conn: sqlite3.Connection) -> list[Run]:
 
 def load_outcomes(
     conn: sqlite3.Connection, run_id: int
-) -> list[tuple[str, int, bool, str, str, int, int, int, int, str]]:
+) -> list[tuple[str, int, bool, str, str, int, int, int, int, str, str]]:
     rows = conn.execute(
         "SELECT channel, message_id, included, stage, reason, photo_relevance, importance, "
-        "personal_importance, final_importance, merged_text "
+        "personal_importance, final_importance, merged_text, photo_path "
         "FROM pipeline_outcomes WHERE run_id = ?",
         (run_id,),
     ).fetchall()
     return [
-        (ch, mid, bool(inc), stage, reason, photo_relevance, importance, personal, final, merged_text)
-        for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final, merged_text in rows
+        (ch, mid, bool(inc), stage, reason, photo_relevance, importance, personal, final,
+         merged_text, photo_path)
+        for (ch, mid, inc, stage, reason, photo_relevance, importance, personal, final,
+             merged_text, photo_path) in rows
     ]
 
 
