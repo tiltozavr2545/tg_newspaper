@@ -9,20 +9,34 @@ headless Chromium (Playwright). На вход — уже отфильтрова�
 шаблоне всегда 1мм на бумаге. DPI влияет только на плотность пикселей
 итогового PNG (см. render_pages).
 
-Вёрстка — мозаичная CSS-грид (не проточные column-count колонки): у каждой
-новости своя "важность" (lead/brief по LLM-оценке, см. _assign_tiers) и
-соответствующий размер плитки в сетке — вперемешку, а не ровными столбцами
-(так строят настоящие газетные полосы: broken-column/mosaic layout, а не
-единая колоночная лента). Ширина плитки определяет только типографику —
-высота всегда считается по фактическому объёму текста конкретного поста
-(_estimate_row_span), полный текст печатается всегда, ничего не обрезается
-многоточием на месте. Пропорции и разбивку на уровни см. в _assign_tiers.
+Вёрстка использует CSS-грид с тремя стандартными ширинами плитки —
+lead/feature/brief по LLM-оценке важности (см. _build_bands), сложенными в
+ряды (_Band), которые всегда в сумме дают ровно ширину полосы (columns):
+один полноширинный lead, пары feature шириной в половину полосы, тройки
+brief шириной в треть полосы. Это не проточные column-count колонки и не
+свободная упаковка "как получится" (первая версия Этапа 3 использовала
+grid-auto-flow:dense со свободной высотой каждой плитки по отдельности —
+из-за разной длины текста соседние колонки расходились по высоте, и в
+сетке появлялись беспорядочные серые провалы посреди полосы, а не только
+внизу). Ряд — атомарная единица разбивки на полосы: все плитки одного ряда
+получают ОДНУ и ту же высоту (по самой длинной статье в ряду), поэтому у
+соседних плиток низ всегда совпадает, а более короткие статьи просто
+получают немного пустого места внутри СВОЕЙ собственной белой плитки, а не
+общий серый провал сквозь фон .mosaic. Неполный ряд в конце очереди (не
+хватило статей набрать ряд целиком) не оставляет дыру, а растягивает
+оставшиеся плитки на всю ширину полосы (см. _group_into_bands) — поэтому
+пустое место в принципе может появиться только в самом низу последней
+полосы номера, если статей не хватило заполнить её целиком. Ширина плитки
+определяет только типографику — высота всегда считается по фактическому
+объёму текста самой длинной статьи ряда (_estimate_row_span), полный текст
+печатается всегда, ничего не обрезается многоточием на месте. Пропорции и
+разбивку на уровни см. в _build_bands.
 
 Если новостей за сутки набралось больше, чем помещается на одну полосу,
 газета получает вторую, третью и так далее полосу — передовица и штамп
 только на первой, дальше идут облегчённые "внутренние" полосы с
 running-header, как в настоящей многостраничной газете. Разбивка на полосы
-(render_pages, _fit_page) — не просто оценка по объёму текста: каждая
+(render_pages, _fit_bands) — не просто оценка по объёму текста: каждая
 страница-кандидат реально рендерится в headless Chromium (тем же
 device_scale_factor, что и финальный скриншот — иначе другое округление
 ширины символов до физических пикселей может перенести строки иначе и
@@ -85,7 +99,7 @@ PHOTO_CAPTION_ROWS = 1  # под подпись-титр под фото хва�
 
 ROW_UNIT_MM = 5.2  # высота одного "кирпичика" мозаичной сетки
 
-# Геометрия страницы для разбивки на полосы (см. render_pages, _fit_page): сколько места
+# Геометрия страницы для разбивки на полосы (см. render_pages, _fit_bands): сколько места
 # в мм съедают несжимаемые части листа — большая шапка (только на первой
 # полосе), облегчённая "продолжение" шапка (на второй и далее — так делают
 # настоящие газеты: разворот с передовицей один, дальше просто внутренние
@@ -113,11 +127,18 @@ SHEET_UNITS = 2
 # типографика (кегль заголовка, буквица у lead), НЕ обрезка текста: полный
 # текст поста печатается всегда (см. _estimate_row_span), лишнее просто
 # уходит на следующую полосу через пагинацию (render_pages), а не отрезается
-# многоточием на месте. Всего два уровня (решение пользователя от
-# 2026-09-27: один крупный пост на весь номер, не три вперемешку размера) —
-# самый важный пост становится lead, все остальные — одного размера brief.
-LEAD_COL_SPAN = 3
-BRIEF_COL_SPAN = 2
+# многоточием на месте. Три уровня (решение пользователя от 2026-09-27:
+# вернули средний feature-размер между lead и brief — с двумя уровнями сетке
+# было не из чего собрать ряд без остатка, кроме "один лид + однородные
+# brief", и это же решение стандартизирует ширины так, чтобы ряды всегда
+# складывались без дыр, см. _build_bands) — самый важный пост становится
+# lead на всю ширину полосы, следующие FEATURE_SLOTS по важности — feature
+# в половину ширины (columns // 2), всё остальное — brief в треть ширины
+# (columns // 3); ширины считаются от переданного в render_pages columns, а
+# не от фиксированной константы (см. _group_into_bands) — поэтому columns
+# должен быть кратен 6, иначе lead/feature/brief перестанут делиться на
+# columns без остатка и ряды начнут растягиваться чаще, чем нужно.
+FEATURE_SLOTS = 4  # сколько постов после лида получают feature — чётное число, чтобы они всегда складывались в ряды по 2 без остатка на стыке с уровнем brief (см. _build_bands)
 
 # Геометрия для оценки, сколько строк реально займёт текст поста в плитке
 # заданной ширины — чтобы row span считался по факту объёма текста, а не по
@@ -133,19 +154,19 @@ CHAR_WIDTH_FACTOR = 0.5  # средняя ширина символа кирил
 ROW_SAFETY_FACTOR = 1.1  # небольшой запас поверх оценки по символам (переносы по словам режут строки чуть менее эффективно, чем голый подсчёт символов)
 ROW_OVERHEAD = 2  # паддинги плитки + отступ под byline, в row-unit'ах
 
-# Только для _seed_batch — стартовая прикидка, сколько новостей пробовать
+# Только для _seed_bands — стартовая прикидка, сколько рядов пробовать
 # впихнуть в полосу за один заход, ДО реальной проверки в браузере
-# (_fit_page). За корректность (гарантию, что текст не обрежется) отвечает
+# (_fit_bands). За корректность (гарантию, что текст не обрежется) отвечает
 # именно измерение в headless Chromium, а не это число — оно лишь экономит
 # число итераций цикла подгонки (без него пришлось бы начинать с одной
 # новости за раз). Занижено умышленно: лучше на один лишний проход цикла
 # больше, чем начинать с заведомо переполненной пробной полосы.
 PAGE_BUDGET_SAFETY_FACTOR = 0.9
 
-TIER_BODY_FONT_MM = {"lead": 3.2, "brief": 2.9}
+TIER_BODY_FONT_MM = {"lead": 3.2, "feature": 3.05, "brief": 2.9}
 TIER_BODY_LINE_HEIGHT = 1.4  # соответствует line-height в CSS для .card p
-TIER_HEADLINE_FONT_MM = {"lead": 5.6, "brief": 3.7}
-TIER_HEADLINE_LINE_HEIGHT = {"lead": 1.14, "brief": 1.2}
+TIER_HEADLINE_FONT_MM = {"lead": 5.6, "feature": 4.5, "brief": 3.7}
+TIER_HEADLINE_LINE_HEIGHT = {"lead": 1.14, "feature": 1.18, "brief": 1.2}
 
 _STYLE_TEMPLATE = """
 <style>
@@ -269,7 +290,17 @@ _STYLE_TEMPLATE = """
     display: grid;
     grid-template-columns: repeat({columns}, 1fr);
     grid-auto-rows: {row_unit}mm;
-    grid-auto-flow: dense;
+    /* Ряды (см. _build_bands в layout.py) уже посчитаны в Python так, что
+       ширины плиток внутри каждого ряда в сумме всегда дают ровно columns —
+       обычный построчный поток сам укладывает их одну строку за другой без
+       участия браузера в решении, куда что поставить. grid-auto-flow:dense
+       (было раньше) перекладывал плитки в более ранние пустые ячейки, когда
+       колонки расходились по высоте из-за разной длины текста — из-за этого
+       в сетке появлялись беспорядочные серые провалы посреди полосы, а не
+       только в её низу. Раз дыр внутри ряда больше не бывает по построению,
+       дополнительная переукладка не нужна и только мешала бы порядку
+       по важности (важные новости должны идти раньше по потоку). */
+    grid-auto-flow: row;
     gap: 0.5mm;
     background-color: #cfc7b8;
   }}
@@ -291,12 +322,16 @@ _STYLE_TEMPLATE = """
     line-height: 1; pointer-events: none; z-index: 0;
   }}
   .card.tier-lead::after {{ font-size: 18mm; bottom: -4mm; }}
+  .card.tier-feature::after {{ font-size: 14mm; bottom: -3mm; }}
   .card:nth-of-type(3n)::after {{ transform: rotate(-8deg); }}
   .card:nth-of-type(3n+1)::after {{ transform: rotate(6deg); }}
   .card:nth-of-type(3n+2)::after {{ transform: rotate(-2deg); }}
   .card-content {{ position: relative; z-index: 1; height: 100%; }}
 
-  /* Фото-врезка (только brief, photo_relevance >= 2, см. _should_show_photo)
+  /* Фото-врезка (feature и brief, photo_relevance >= 2, см.
+     _should_show_photo; у каждого поста, независимо от размера плитки,
+     может быть фото — не показывает его только lead, решение пользователя:
+     единственная крупная плитка номера держится на чистом тексте)
      — кадр бьётся в край плитки отрицательными полями, равными паддингу
      .card, дальше текст идёт как обычно с тем же паддингом. Обработка —
      имитация фототелеграфа/wirephoto (согласовано с пользователем):
@@ -338,6 +373,9 @@ _STYLE_TEMPLATE = """
     float: left; font-size: 8.5mm; line-height: 7mm; padding: 1mm 1.2mm 0 0;
     font-weight: 900;
   }}
+
+  .card.tier-feature h2 {{ font-size: 4.5mm; line-height: 1.18; margin: 0 0 1.4mm; }}
+  .card.tier-feature p {{ font-size: 3.05mm; }}
 
   .card.tier-brief h2 {{ font-size: 3.7mm; line-height: 1.2; margin: 0 0 1mm; }}
   .card.tier-brief p {{ font-size: 2.9mm; }}
@@ -476,7 +514,7 @@ class Article:
     body_char_count: int
     # Оценка значимости от LLM-классификатора (1-5, см. classifier.py) — 0,
     # если не передана явно (например, вызов без пайплайна). Определяет и
-    # ширину плитки (_assign_tiers — важное крупнее), и порядок заполнения
+    # ширину плитки (_build_bands — важное крупнее), и порядок заполнения
     # полос (render_pages — важное раньше, значит с большей вероятностью
     # попадёт в номер при ограничении на число полос, см. build_newspaper в
     # pipeline.py).
@@ -488,7 +526,7 @@ class Article:
     photo_relevance: int = 1
     # data:-URI уже прочитанного и base64-закодированного файла фото, либо
     # None — нет фото/не скачалось/файл потерялся с диска. Кодируем один раз
-    # тут, а не в шаблоне: _fit_page перерисовывает HTML полосы много раз за
+    # тут, а не в шаблоне: _fit_bands перерисовывает HTML полосы много раз за
     # проход подгонки (см. render_pages), а сам файл фото за это время не
     # меняется. data:-URI, а не file://-путь — Chromium в контексте, куда
     # содержимое загружено через set_content (не через реальную навигацию по
@@ -533,12 +571,13 @@ def build_article(
 
 
 def _should_show_photo(tier: str, article: Article) -> bool:
-    """Фото — только у brief (решение пользователя от 2026-09-27: единственная
-    крупная lead-плитка номера держится на чистом тексте и типографике —
-    заголовок, буквица, — фото ей не положено ни при какой оценке
-    photo_relevance)."""
+    """Фото — у feature и brief (у каждого поста, независимо от ширины
+    плитки, может быть фото), но не у lead (решение пользователя от
+    2026-09-27: единственная крупная lead-плитка номера держится на чистом
+    тексте и типографике — заголовок, буквица, — фото ей не положено ни при
+    какой оценке photo_relevance)."""
     return (
-        tier == "brief"
+        tier in ("feature", "brief")
         and article.photo_data_uri is not None
         and article.photo_relevance >= MIN_PHOTO_RELEVANCE_TO_SHOW
     )
@@ -546,7 +585,7 @@ def _should_show_photo(tier: str, article: Article) -> bool:
 
 @dataclass(frozen=True)
 class _Placement:
-    tier: str  # "lead" | "brief"
+    tier: str  # "lead" | "feature" | "brief"
     col_span: int
     row_span: int
 
@@ -572,8 +611,8 @@ def _photo_row_span(col_span: int, columns: int, page_w: float) -> int:
     """Сколько row-unit'ов займёт фото-врезка (см. _should_show_photo) при
     заданной ширине плитки — кадр фиксированного соотношения сторон
     (PHOTO_ASPECT_RATIO) на всю ширину плитки, плюс строка под подпись.
-    Только стартовая оценка для _seed_batch — реальную высоту, как и для
-    текста, подтверждает браузерный цикл подгонки (_fit_page)."""
+    Только стартовая оценка для _seed_bands — реальную высоту, как и для
+    текста, подтверждает браузерный цикл подгонки (_fit_bands)."""
     width_mm = _tile_width_mm(col_span, columns, page_w)
     height_mm = width_mm / PHOTO_ASPECT_RATIO
     return math.ceil(height_mm / ROW_UNIT_MM) + PHOTO_CAPTION_ROWS
@@ -591,7 +630,7 @@ def _estimate_row_span(tier: str, col_span: int, columns: int, page_w: float, ar
     """Высота плитки — по факту того, сколько строк реально займут заголовок
     и полный текст поста на этой ширине, а не по фиксированному диапазону:
     текст никогда не обрезается, лишнее просто уезжает на следующую полосу
-    (render_pages, _fit_page)."""
+    (render_pages, _fit_bands)."""
     text_width = _text_width_mm(col_span, columns, page_w)
     headline_rows = _rows_for_text(
         article.headline_char_count, text_width, TIER_HEADLINE_FONT_MM[tier], TIER_HEADLINE_LINE_HEIGHT[tier]
@@ -603,49 +642,79 @@ def _estimate_row_span(tier: str, col_span: int, columns: int, page_w: float, ar
     return ROW_OVERHEAD + photo_rows + headline_rows + body_rows
 
 
-def _assign_tiers(
-    articles: list[Article], columns: int, page_w: float, avail_rows_first: int
-) -> dict[int, _Placement]:
-    """Разбивает новости на два уровня важности по LLM-оценке (importance,
-    длина текста — только тай-брейк при равной оценке): одна широкая
-    "передовица" (самая значимая новость дня, а не просто самый длинный
-    пост, и всегда ровно одна на весь номер — решение пользователя от
-    2026-09-27), всё остальное — плитки одного меньшего размера. Ширина
-    плитки определяет только typографику и ширину колонки — высота везде
-    считается по фактическому объёму текста (_estimate_row_span), так что
-    полный текст поста печатается всегда. Возвращает {id(article): _Placement}."""
+@dataclass(frozen=True)
+class _Band:
+    """Один ряд мозаики: несколько плиток ОДНОЙ ширины (col_span), которые
+    в сумме всегда дают ровно ширину полосы (columns) — см. модуль-докстринг
+    про переход от свободной упаковки к стандартизированным рядам без дыр.
+    row_span общий на весь ряд, посчитанный по самой длинной статье в нём
+    (_band_row_span) — остальные участники ряда просто получают немного
+    пустого места внутри СВОЕЙ собственной плитки, если их текст короче.
+    Ряд — атомарная единица пагинации (_fit_bands, _fill_bands): либо весь
+    целиком помещается на полосу, либо весь целиком уходит на следующую."""
+
+    tier: str  # "lead" | "feature" | "brief"
+    col_span: int
+    members: tuple[Article, ...]
+    row_span: int
+
+
+def _band_row_span(tier: str, col_span: int, columns: int, page_w: float, members: tuple[Article, ...]) -> int:
+    return max(_estimate_row_span(tier, col_span, columns, page_w, m) for m in members)
+
+
+def _make_band(tier: str, col_span: int, members: list[Article], columns: int, page_w: float) -> _Band:
+    members_t = tuple(members)
+    return _Band(tier, col_span, members_t, _band_row_span(tier, col_span, columns, page_w, members_t))
+
+
+def _group_into_bands(
+    tier: str, pool: list[Article], group_size: int, columns: int, page_w: float
+) -> list[_Band]:
+    """Режет pool на полноширинные ряды по group_size статей подряд — ширина
+    каждой плитки в ряду равна columns // group_size, так что group_size
+    таких плиток в сумме всегда дают ровно columns без остатка. Последний
+    ряд, если статей не хватило набрать его целиком (буквально конец
+    очереди — дальше в pool ничего нет), не оставляет дыру, а растягивает
+    оставшиеся плитки на всю ширину полосы поровну между ними (см. модуль-
+    докстринг: "растянуть иконку поста" вместо серого провала в сетке)."""
+    span = columns // group_size
+    bands: list[_Band] = []
+    for i in range(0, len(pool), group_size):
+        chunk = pool[i : i + group_size]
+        chunk_span = span if len(chunk) == group_size else columns // len(chunk)
+        bands.append(_make_band(tier, chunk_span, chunk, columns, page_w))
+    return bands
+
+
+def _build_bands(articles: list[Article], columns: int, page_w: float) -> list[_Band]:
+    """Разбивает новости на три уровня важности по LLM-оценке (importance,
+    тай-брейк при равной оценке — длина текста для лида, дата публикации для
+    остальных): одна широкая "передовица" на всю ширину полосы (самая
+    значимая новость дня, а не просто самый длинный пост, и всегда ровно
+    одна на весь номер), следующие FEATURE_SLOTS по важности — плитки
+    в половину ширины полосы (feature), всё остальное — в треть ширины
+    (brief). lead/feature/brief-ширины — columns, columns // 2 и columns // 3
+    (все три — делители columns), поэтому lead всегда один в своём ряду,
+    feature — парами, brief — тройками (_group_into_bands): ряды всегда заполняются
+    без остатка, кроме, возможно, самого последнего ряда во всей очереди
+    (см. его докстринг). Порядок рядов на выходе — приоритет печати: лид
+    первым, дальше по убыванию важности — тот же порядок, в котором
+    render_pages наполняет полосы, так что при нехватке места важное
+    попадёт в номер раньше неважного. Возвращает список _Band."""
+    if not articles:
+        return []
+
     by_importance = sorted(articles, key=lambda a: (a.importance, a.word_count), reverse=True)
-
-    placements: dict[int, _Placement] = {}
-    if not by_importance:
-        return placements
-
     lead, *rest = by_importance
-    # Обычная ширина передовицы — LEAD_COL_SPAN, но если конкретный пост
-    # настолько длинный, что даже на всю доступную высоту первой полосы не
-    # уместится (реальный случай: пост на 2700 знаков — 47 row-unit'ов
-    # против 44 доступных, последнее слово статьи обрезалось), расширяем
-    # передовицу до полной ширины сетки — шире колонка, короче строка нужна
-    # на единицу текста, ниже требуемая высота. Обрезка текста тут
-    # недопустима (см. модуль-докстринг), а перенос лида на вторую полосу
-    # выглядел бы гораздо страннее, чем более широкая передовица. Прыгаем
-    # сразу на полную ширину, а не по одной колонке за шаг: промежуточная
-    # ширина (например, 5 из 6) оставляет соседний столбец шириной в 1
-    # колонку — туда не влезает уже ни одна brief-плитка (все они шириной 2),
-    # и он просто пропадает пустой полосой сбоку от передовицы.
-    lead_col = LEAD_COL_SPAN
-    lead_row = _estimate_row_span("lead", lead_col, columns, page_w, lead)
-    if lead_row > avail_rows_first:
-        lead_col = columns
-        lead_row = _estimate_row_span("lead", lead_col, columns, page_w, lead)
-    placements[id(lead)] = _Placement("lead", lead_col, min(lead_row, avail_rows_first))
+    rest_ordered = sorted(rest, key=lambda a: (-a.importance, a.posted_at))
 
-    for a in rest:
-        placements[id(a)] = _Placement(
-            "brief", BRIEF_COL_SPAN, _estimate_row_span("brief", BRIEF_COL_SPAN, columns, page_w, a)
-        )
+    feature_pool, brief_pool = rest_ordered[:FEATURE_SLOTS], rest_ordered[FEATURE_SLOTS:]
 
-    return placements
+    bands = [_make_band("lead", columns, [lead], columns, page_w)]
+    bands += _group_into_bands("feature", feature_pool, 2, columns, page_w)
+    bands += _group_into_bands("brief", brief_pool, 3, columns, page_w)
+    return bands
 
 
 def _article_html(article: Article, placement: _Placement) -> str:
@@ -670,20 +739,20 @@ def _article_html(article: Article, placement: _Placement) -> str:
     </div>"""
 
 
-def _seed_batch(
-    remaining: list[Article], placements: dict[int, _Placement], columns: int, avail_rows: int
-) -> int:
-    """Сколько новостей из начала remaining взять как первую попытку для
-    страницы — по бюджету "ячеек" (доступные строки × колонки), с запасом
-    (PAGE_BUDGET_SAFETY_FACTOR). Это только стартовая эвристика, чтобы не
-    гонять цикл проверки в браузере (_fit_page) от одной новости за раз —
-    настоящая проверка, влезло ли реально, всегда происходит в браузере."""
+def _seed_bands(remaining: list[_Band], columns: int, avail_rows: int) -> int:
+    """Сколько рядов из начала remaining взять как первую попытку для
+    полосы — по бюджету "ячеек" (доступные строки × колонки), с запасом
+    (PAGE_BUDGET_SAFETY_FACTOR). Ряд всегда полной ширины (см. _Band), так
+    что его "стоимость" в ячейках — просто columns * row_span, без разницы,
+    сколько в нём плиток и какой они ширины. Это только стартовая
+    эвристика, чтобы не гонять цикл проверки в браузере (_fit_bands) от
+    одного ряда за раз — настоящая проверка, влезло ли реально, всегда
+    происходит в браузере."""
     budget = avail_rows * columns * PAGE_BUDGET_SAFETY_FACTOR
     used = 0
     count = 0
-    for a in remaining:
-        p = placements[id(a)]
-        cost = p.col_span * p.row_span
+    for b in remaining:
+        cost = columns * b.row_span
         if count and used + cost > budget:
             break
         used += cost
@@ -693,14 +762,14 @@ def _seed_batch(
 
 # Два независимых вида переполнения, и лечатся они по-разному:
 # - boxOverflow: сама плитка (грид-ячейка) вылезает за нижний край .mosaic —
-#   значит на полосе тупо не хватило места, статью нужно переносить на
-#   следующую (см. _fit_page).
+#   значит на полосе тупо не хватило места, весь её ряд целиком нужно
+#   переносить на следующую (см. _fit_bands — ряд атомарен).
 # - contentOverflow: плитка помещается на полосе, но её СОБСТВЕННЫЙ текст не
 #   влезает в отведённую ей высоту (card.scrollHeight > card.clientHeight —
 #   scrollHeight видит реальный контент даже под overflow:hidden). Перенос
 #   такой статьи на другую полосу ничего не даст — у неё та же оценка
-#   row_span, тот же результат на любой полосе; нужно увеличить именно её
-#   row_span (см. _fit_page) и переизмерить.
+#   row_span, тот же результат на любой полосе; нужно увеличить row_span
+#   всего ряда, в котором она стоит (см. _fit_bands), и переизмерить.
 _OVERFLOW_CHECK_JS = """
 (mosaic) => {
   const mRect = mosaic.getBoundingClientRect();
@@ -725,92 +794,123 @@ _OVERFLOW_CHECK_JS = """
 """
 
 
-def _fit_page(
+def _flatten_bands(bands: list[_Band]) -> list[Article]:
+    return [m for b in bands for m in b.members]
+
+
+def _band_bounds(bands: list[_Band]) -> list[tuple[int, int]]:
+    """(start, end) индексов в плоском списке статей (_flatten_bands) для
+    каждого ряда — чтобы перевести индексы карточек из результата
+    _OVERFLOW_CHECK_JS (он видит только плоский DOM) обратно в ряды."""
+    bounds = []
+    pos = 0
+    for b in bands:
+        bounds.append((pos, pos + len(b.members)))
+        pos += len(b.members)
+    return bounds
+
+
+def _fit_bands(
     probe_page: Page,
-    candidates: list[Article],
+    candidates: list[_Band],
     placements: dict[int, _Placement],
     row_unit_px: float,
     columns: int,
     page_w: float,
     build_probe_html: Callable[[list[Article]], str],
-) -> tuple[list[Article], list[Article]]:
-    """Реально рендерит кандидатов в headless-браузере и смотрит, что не
+) -> tuple[list[_Band], list[_Band]]:
+    """Реально рендерит ряды-кандидаты в headless-браузере и смотрит, что не
     влезло — это не оценка, а измерение в настоящем layout-движке Chromium,
     единственный надёжный способ гарантировать, что текст никогда не
     обрежется overflow:hidden на .card/.mosaic втихую (см. модуль-
-    докстринг). Различает два вида переполнения (см. _OVERFLOW_CHECK_JS):
+    докстринг). Различает два вида переполнения (см. _OVERFLOW_CHECK_JS),
+    но применяет их на уровне РЯДА целиком, а не отдельной плитки — все
+    плитки ряда обязаны иметь одну и ту же высоту (см. _Band):
 
-    - Текст не влезает в СВОЮ ЖЕ плитку (card.scrollHeight > clientHeight) —
-      значит оценка _estimate_row_span для этой статьи была занижена.
-      Перенос на другую полосу тут не поможет: row_span у статьи не
-      зависит от полосы, на любой странице получится то же самое. Вместо
-      этого увеличиваем её row_span прямо в общем placements (см.
-      render_pages — тот же словарь используется при финальной сборке) и
+    - Текст какой-то плитки не влезает в СВОЮ ЖЕ ячейку — значит оценка
+      row_span для всего её ряда была занижена (перенос на другую полосу
+      тут не поможет: row_span ряда не зависит от полосы, результат будет
+      тем же). Увеличиваем row_span всего ряда целиком (остальные плитки
+      этого ряда просто получат чуть больше пустого места внутри себя) и
       перерисовываем эту же полосу заново.
-    - Сама плитка (грид-ячейка) вылезает за нижний край .mosaic — вот это
-      уже реальная нехватка места на полосе, такие статьи переходят на
-      следующую (после того как переполнений по первому пункту не осталось
-      — иначе появление лишней высоты у одной плитки может ВНОВЬ вытолкнуть
-      другую за край, поэтому первый вид переполнения всегда лечится
-      целиком, прежде чем разбираться со вторым).
+    - Хотя бы одна плитка ряда (грид-ячейка) вылезает за нижний край
+      .mosaic — реальная нехватка места на полосе, весь ряд целиком
+      переходит на следующую (после того как переполнений по первому
+      пункту не осталось — иначе лишняя высота у одного ряда может ВНОВЬ
+      вытолкнуть другой за край).
 
-    Возвращает (влезло на этой полосе, не влезло — на следующую)."""
+    Возвращает (влезло на этой полосе, не влезло — на следующую), оба как
+    списки _Band."""
     queue = list(candidates)
-    overflow_accum: list[Article] = []
+    overflow_accum: list[_Band] = []
     iteration = 0
     while queue:
         iteration += 1
-        probe_page.set_content(build_probe_html(queue), wait_until="load")
+        flat = _flatten_bands(queue)
+        bounds = _band_bounds(queue)
+        probe_page.set_content(build_probe_html(flat), wait_until="load")
         result = probe_page.eval_on_selector(".mosaic", _OVERFLOW_CHECK_JS) or {}
         content_overflow = result.get("contentOverflow") or []
         box_overflow = set(result.get("boxOverflow") or [])
         logger.debug(
-            "_fit_page: попытка %d, кандидатов=%d, тесно_в_своей_плитке=%d, не влезло_на_полосу=%d",
+            "_fit_bands: попытка %d, рядов=%d, тесно_в_своей_плитке=%d, не влезло_на_полосу=%d",
             iteration, len(queue), len(content_overflow), len(box_overflow),
         )
 
+        def _band_index_of(flat_index: int) -> int:
+            return next(i for i, (s, e) in enumerate(bounds) if s <= flat_index < e)
+
         if content_overflow:
+            extra_rows_by_band: dict[int, int] = {}
             for index, shortfall_px in content_overflow:
-                a = queue[index]
+                band_i = _band_index_of(index)
                 extra_rows = math.ceil(shortfall_px / row_unit_px)
-                old = placements[id(a)]
-                placements[id(a)] = replace(old, row_span=old.row_span + extra_rows)
+                extra_rows_by_band[band_i] = max(extra_rows_by_band.get(band_i, 0), extra_rows)
+            for band_i, extra_rows in extra_rows_by_band.items():
+                band = queue[band_i]
+                new_band = replace(band, row_span=band.row_span + extra_rows)
+                queue[band_i] = new_band
+                for m in new_band.members:
+                    placements[id(m)] = replace(placements[id(m)], row_span=new_band.row_span)
             continue  # тот же queue, но с исправленными row_span — перерисовываем
 
         if not box_overflow:
             return queue, overflow_accum
 
-        fitted = [a for i, a in enumerate(queue) if i not in box_overflow]
-        newly_bad = [a for i, a in enumerate(queue) if i in box_overflow]
+        bad_bands = {_band_index_of(i) for i in box_overflow}
+        fitted = [b for i, b in enumerate(queue) if i not in bad_bands]
+        newly_bad = [b for i, b in enumerate(queue) if i in bad_bands]
         if not fitted:
             if len(queue) == 1:
-                # Единственная статья на всю полосу, и даже так не влезает.
-                # Прежде чем сдаваться, пробуем то же, что и для лида
-                # (_assign_tiers): расширить её на всю ширину сетки — шире
-                # колонка, короче строка, меньше нужных row-unit'ов. Пока
-                # есть куда расширяться — увеличиваем col_span и
-                # перевычисляем row_span под новую ширину, перерисовываем.
-                a = queue[0]
-                old = placements[id(a)]
-                if old.col_span < columns:
-                    new_col = columns
-                    new_row = _estimate_row_span(old.tier, new_col, columns, page_w, a)
-                    placements[id(a)] = replace(old, col_span=new_col, row_span=new_row)
+                band = queue[0]
+                if len(band.members) > 1:
+                    # Единственный ряд на всю полосу, и даже так не влезает,
+                    # но в нём несколько плиток — прежде чем сдаваться,
+                    # пробуем то же "растягивание", что и для неполного
+                    # последнего ряда очереди (_group_into_bands): разбиваем
+                    # его на отдельные плитки во всю ширину полосы и пробуем
+                    # каждую по отдельности — шире колонка, короче строка
+                    # нужна на единицу текста, ниже требуемая высота.
+                    solo_bands = [
+                        _make_band(band.tier, columns, [m], columns, page_w) for m in band.members
+                    ]
+                    for b in solo_bands:
+                        for m in b.members:
+                            placements[id(m)] = _Placement(b.tier, b.col_span, b.row_span)
+                    queue = solo_bands
                     continue
-                # Дальше расширять некуда (уже во всю ширину) — совсем
-                # некуда сжимать (редчайший случай, аномально длинный
-                # пост). Отдаём как есть: страховка .card{overflow:hidden}
-                # не даст ей наехать на соседей (их тут и нет), но её
-                # собственный текст может обрезаться — больше сжимать нечем.
+                # Уже одна-единственная плитка во всю ширину полосы, и всё
+                # равно не влезает (редчайший случай, аномально длинный
+                # пост) — дальше сжимать некуда. Отдаём как есть: страховка
+                # .card{overflow:hidden} не даст ей наехать на соседей (их
+                # тут и нет), но её собственный текст может обрезаться.
                 return queue, overflow_accum
             # Раньше здесь сразу отдавался queue[:1] как "влезло" без
             # проверки — а он мог не влезть и в одиночку (переполнение было
-            # именно от соседства с другими, не от него самого). Баг нашёлся
-            # не на этапе подгонки, а только в финальном документе: empty
-            # (влезло) отчитывалось, а собранная полоса реально обрезала
-            # текст. Теперь вместо мгновенного возврата сокращаем queue до
-            # первой статьи и ПЕРЕПРОВЕРЯЕМ её в изоляции на следующем
-            # круге — остальные уходят в overflow.
+            # именно от соседства с другими, не от него самого). Вместо
+            # мгновенного возврата сокращаем queue до первого ряда и
+            # ПЕРЕПРОВЕРЯЕМ его в изоляции на следующем круге — остальные
+            # уходят в overflow.
             overflow_accum = queue[1:] + overflow_accum
             queue = queue[:1]
             continue
@@ -819,43 +919,40 @@ def _fit_page(
     return queue, overflow_accum
 
 
-def _fill_page(
+def _fill_bands(
     probe_page: Page,
-    remaining: list[Article],
+    remaining: list[_Band],
     placements: dict[int, _Placement],
     row_unit_px: float,
     columns: int,
     page_w: float,
     avail_rows: int,
     build_probe_html: Callable[[list[Article]], str],
-) -> tuple[list[Article], list[Article]]:
-    """Наполняет одну полосу, не останавливаясь на первой удачной, но
-    осторожной оценке (_seed_batch). Пример реальной проблемы, которую это
-    чинит: самая значимая новость дня (передовица по importance) оказалась
-    короткой — её реальная высота небольшая, а _seed_batch, посчитав по ней
-    бюджет "ячеек" на глаз, решил, что вторая взятая следом новость уже не
-    влезет, и остановился на партии из 1-2 статей, оставив почти всю
-    альбомную полосу пустой, хотя место реально было. При фиксированном
-    числе полос (Этап 3 — печатный номер, не бесконечная лента) пустовать
-    целой полосе — намного хуже, чем ошибиться в размере партии.
+) -> tuple[list[_Band], list[_Band]]:
+    """Наполняет одну полосу рядами, не останавливаясь на первой удачной, но
+    осторожной оценке (_seed_bands). Пример реальной проблемы, которую это
+    чинит: передовица (лид) оказалась короткой — её реальная высота
+    небольшая, а _seed_bands, посчитав по ней бюджет "ячеек" на глаз, решил,
+    что следующий ряд уже не влезет, и остановился на 1-2 рядах, оставив
+    почти всю альбомную полосу пустой, хотя место реально было. При
+    фиксированном числе полос (Этап 3 — печатный номер, не бесконечная
+    лента) пустовать целой полосе — намного хуже, чем ошибиться в размере
+    партии.
 
-    После стартовой партии пробуем добавить остаток ПО ОДНОЙ статье — и,
-    важно, не останавливаемся на первой же, которая не влезла: она просто
-    откладывается (skipped), а дальше пробуются следующие. Иначе одна
-    крупная статья сразу после лида блокировала бы место для более мелких,
-    которые прекрасно поместились бы в тот же остаток (реальный случай на
-    живых данных — вторая по важности статья не влезала, и вся полоса, кроме
-    лида, оставалась пустой, хотя дальше по очереди были статьи заметно
-    меньше)."""
-    seed_n = _seed_batch(remaining, placements, columns, avail_rows)
+    После стартовой партии пробуем добавить остаток ПО ОДНОМУ ряду — и,
+    важно, не останавливаемся на первом же, который не влез: он просто
+    откладывается (skipped), а дальше пробуются следующие. Иначе один
+    крупный ряд сразу после лида блокировал бы место для более мелких,
+    которые прекрасно поместились бы в тот же остаток."""
+    seed_n = _seed_bands(remaining, columns, avail_rows)
     current, rest = remaining[:seed_n], remaining[seed_n:]
-    fitted, overflow = _fit_page(probe_page, current, placements, row_unit_px, columns, page_w, build_probe_html)
+    fitted, overflow = _fit_bands(probe_page, current, placements, row_unit_px, columns, page_w, build_probe_html)
     current = fitted
     pending = overflow + rest
 
-    skipped: list[Article] = []
+    skipped: list[_Band] = []
     for candidate in pending:
-        trial_fitted, trial_overflow = _fit_page(
+        trial_fitted, trial_overflow = _fit_bands(
             probe_page, current + [candidate], placements, row_unit_px, columns, page_w, build_probe_html
         )
         if trial_overflow:
@@ -951,7 +1048,7 @@ def render_pages(
 
     Разбивка на страницы — не просто оценка по объёму текста: каждый
     лист-кандидат реально рендерится в headless Chromium, и то, что не влезло
-    (см. _fit_page), по-настоящему переносится на следующий лист. Иначе
+    (см. _fit_bands), по-настоящему переносится на следующий лист. Иначе
     (доверять только оценке по числу символов) — на практике случается
     недооценка на конкретных постах, и текст обрезается overflow:hidden молча,
     что ровно то, чего вся эта многостраничность должна избегать (проверено
@@ -967,12 +1064,13 @@ def render_pages(
     (см. build_newspaper в pipeline.py) решил, что с ними делать: сократить
     нейронкой и попробовать снова или выбросить из номера как недостаточно
     важные. importance_by_key определяет и то, что попадёт в номер раньше
-    (см. ordered ниже), и ширину плитки каждой новости (_assign_tiers) —
-    самая значимая становится передовицей, а не просто самая длинная.
+    (см. порядок рядов в _build_bands), и ширину плитки каждой новости —
+    самая значимая становится передовицей на всю ширину полосы, а не просто
+    самая длинная.
 
     photo_relevance_by_key/photo_path_by_key — фото поста (см.
     collector.py, pipeline._merge_story_arcs) и оценка LLM, насколько оно
-    нужно (classifier.py). Показывается только у brief-плиток с
+    нужно (classifier.py). Показывается у feature- и brief-плиток с
     photo_relevance >= MIN_PHOTO_RELEVANCE_TO_SHOW (см. _should_show_photo) —
     у lead фото не бывает ни при какой оценке (решение пользователя: единственная
     крупная плитка номера держится на чистом тексте). Обработка кадра — имитация
@@ -1017,18 +1115,15 @@ def render_pages(
         // ROW_UNIT_MM
     )
 
-    placements = _assign_tiers(articles, columns, page_w, avail_rows_first)
-
-    # Порядок плиток: передовица первой (самая значимая по LLM-оценке, а
-    # при равной оценке — самая длинная, см. _assign_tiers), остальное — по
-    # убыванию важности (не по хронологии): при ограничении на число полос
-    # именно порядок этого списка решает, что попадёт в номер, если места
-    # на всех не хватит, — важное должно оказаться раньше в очереди.
-    lead = next(a for a in articles if placements[id(a)].tier == "lead")
-    ordered = [lead] + sorted(
-        (a for a in articles if a is not lead),
-        key=lambda a: (-a.importance, a.posted_at),
-    )
+    # Ряды уже в порядке приоритета печати (лид первым, дальше по убыванию
+    # важности, см. _build_bands) — при ограничении на число полос именно
+    # порядок этого списка решает, что попадёт в номер, если места на всех
+    # не хватит, важное должно оказаться раньше в очереди.
+    bands_all = _build_bands(articles, columns, page_w)
+    placements: dict[int, _Placement] = {}
+    for b in bands_all:
+        for m in b.members:
+            placements[id(m)] = _Placement(b.tier, b.col_span, b.row_span)
 
     style = _STYLE_TEMPLATE.format(
         page_w=page_w,
@@ -1037,7 +1132,7 @@ def render_pages(
         pad_bottom=PAGE_PADDING_BOTTOM_MM,
         columns=columns,
         row_unit=ROW_UNIT_MM,
-        lead_col=LEAD_COL_SPAN,
+        lead_col=columns,
         photo_aspect=PHOTO_ASPECT_CSS,
     )
     date_label = run_date.strftime("%d.%m.%Y")
@@ -1057,7 +1152,7 @@ def render_pages(
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            # Подгонка (_fit_page) рендерится в том же контексте (тот же
+            # Подгонка (_fit_bands) рендерится в том же контексте (тот же
             # device_scale_factor), что и финальный скриншот, — иначе при
             # другом масштабе растеризации текст может перенестись по
             # строкам чуть иначе (округление ширины символов до физических
@@ -1072,7 +1167,7 @@ def render_pages(
             probe_page = context.new_page()
 
             sheets: list[list[Article]] = []
-            remaining = ordered
+            remaining = bands_all
             while remaining:
                 is_first = not sheets
                 avail_rows = avail_rows_first if is_first else avail_rows_rest
@@ -1082,17 +1177,17 @@ def render_pages(
                     # page_num здесь только выбирает вид шапки (полная на
                     # первом листе / облегчённая на остальных, см.
                     # _page_html) — на реальную высоту .mosaic, которую мы
-                    # измеряем в _fit_page, это и должно влиять.
+                    # измеряем в _fit_bands, это и должно влиять.
                     return wrap(_page_html(queue, placements, page_num, page_num, date_label, issue_number))
 
                 candidates_count = len(remaining)
-                fitted, remaining = _fill_page(
+                fitted_bands, remaining = _fill_bands(
                     probe_page, remaining, placements, row_unit_px, columns, page_w, avail_rows, build_probe
                 )
-                sheets.append(fitted)
+                sheets.append(_flatten_bands(fitted_bands))
                 logger.info(
-                    "лист %d: в очереди было=%d влезло=%d осталось_в_очереди=%d",
-                    len(sheets), candidates_count, len(fitted), len(remaining),
+                    "лист %d: рядов в очереди было=%d влезло=%d осталось_в_очереди=%d",
+                    len(sheets), candidates_count, len(fitted_bands), len(remaining),
                 )
                 if max_sheets is not None and len(sheets) >= max_sheets:
                     break
@@ -1100,7 +1195,7 @@ def render_pages(
             # Если вышли по max_sheets, а не по опустевшей очереди — то, что
             # осталось, в номер не попадает вообще (см. докстринг). Отдаём
             # исходные Post вызывающему коду вместо рендера лишних листов.
-            leftover_posts = [a.post for a in remaining]
+            leftover_posts = [m.post for b in remaining for m in b.members]
 
             total_sheets = len(sheets)
             sheets_html = "\n".join(
