@@ -20,6 +20,7 @@ STAGE_LABELS = {
     "copypaste": "копипаст-дедуп",
     "classification": "LLM-классификация",
     "paraphrase": "дедуп пересказов",
+    "story_merge": "склеено в одну статью",
     "history_dedup": "уже публиковалось",
     "final": "—",
 }

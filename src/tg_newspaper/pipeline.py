@@ -51,7 +51,7 @@ Key = tuple[str, int]
 class PostOutcome:
     post: Post
     included: bool
-    stage: str  # "heuristic" | "copypaste" | "classification" | "paraphrase" | "final"
+    stage: str  # "heuristic" | "copypaste" | "classification" | "paraphrase" | "story_merge" | "final"
     reason: str
     # Оценка LLM, насколько посту помогло бы именно фото (не видео) — три
     # степени (см. _CLASSIFICATION_INSTRUCTION в classifier.py): 1 — не
@@ -71,6 +71,15 @@ class PostOutcome:
     # personal не запрашивалась) либо прогон сделан до появления полей.
     personal_importance: int = 0
     final_importance: int = 0
+    # Текст статьи, если он СИНТЕЗИРОВАН пайплайном (сейчас — только
+    # результат _merge_story_arcs, склейка развивающейся истории одного
+    # канала в одну статью), а не совпадает с сырым текстом поста из БД.
+    # Пустая строка — post.text это и есть настоящий текст поста. Нужно
+    # отдельным полем, а не просто post.text, потому что save_run/load_run
+    # проходят через БД: posts хранит только сырые исходники, а
+    # pipeline_outcomes.merged_text — единственное место, где переживает
+    # синтезированный текст между прогоном и повторным открытием в консоли.
+    merged_text: str = ""
 
 
 def effective_importance(outcome: PostOutcome) -> int:
@@ -121,12 +130,17 @@ def _resolve_copypaste(
 
 def _resolve_paraphrase(
     classifier: GeminiClassifier, clusters: list[list[Post]], outcomes: dict[Key, PostOutcome]
-) -> list[Post]:
-    kept: list[Post] = []
+) -> list[list[Post]]:
+    """Для каждого кластера пересказов возвращает подмножество постов,
+    которые LLM сочла НЕ избыточными (несущими хотя бы один уникальный
+    факт) — группировка по кластеру сохраняется в возврате (не сплющивается
+    в общий список), чтобы _merge_story_arcs мог затем разобрать её по
+    каналам и схлопнуть однокан­альную развивающуюся историю в одну статью."""
+    kept_groups: list[list[Post]] = []
     multi = [c for c in clusters if len(c) > 1]
     for c in clusters:
         if len(c) == 1:
-            kept.append(c[0])
+            kept_groups.append([c[0]])
 
     for start in range(0, len(multi), BATCH_SIZE):
         batch = multi[start : start + BATCH_SIZE]
@@ -135,16 +149,16 @@ def _resolve_paraphrase(
         for local_idx, cluster in enumerate(batch):
             decision = by_cluster.get(local_idx)
             if decision is None:
-                kept.extend(cluster)
+                kept_groups.append(cluster)
                 continue
             valid_indices = sorted(
                 {i for i in decision.keep_indices if 0 <= i < len(cluster)}
             )
             if not valid_indices:
-                kept.extend(cluster)
+                kept_groups.append(cluster)
                 continue
             kept_in_cluster = [cluster[i] for i in valid_indices]
-            kept.extend(kept_in_cluster)
+            kept_groups.append(kept_in_cluster)
             kept_ids = {_key(p) for p in kept_in_cluster}
             for p in cluster:
                 if _key(p) not in kept_ids:
@@ -155,7 +169,79 @@ def _resolve_paraphrase(
                         p, False, "paraphrase",
                         f"дубль/подмножество фактов поста(ов) {others}: {decision.reason}",
                     )
-    return kept
+    return kept_groups
+
+
+def _merge_story_arcs(
+    classifier: GeminiClassifier,
+    kept_groups: list[list[Post]],
+    outcomes: dict[Key, PostOutcome],
+    importance_by_key: dict[Key, int],
+    photo_relevance_by_key: dict[Key, int],
+    merged_anchor_keys: set[Key],
+    personal_by_key: dict[Key, int] | None = None,
+) -> list[Post]:
+    """Схлопывает в одну статью посты ОДНОГО канала, которые _resolve_paraphrase
+    оставил внутри одного кластера пересказов как несущие уникальные факты —
+    типичный случай развивающейся истории за день (происшествие -> уточнение
+    -> опровержение), которую иначе напечатали бы как N разрозненных статей.
+    Кросс-канальные случаи (разные каналы сообщают разные факты одного
+    события) не трогаем и печатаем как раньше отдельными постами — решение
+    пользователя от 2026-09-27 сузило склейку до одного канала: развитие
+    истории поперёк каналов — не то же самое, что уточнение в одном канале,
+    и заслуживает отдельного решения, а не автоматической склейки.
+
+    merged_anchor_keys заполняется ключами постов-якорей (см. ниже) — по
+    ним вызывающий код помечает PostOutcome.merged_text, иначе синтезированный
+    текст статьи потеряется при сохранении в БД (pipeline_outcomes не хранит
+    текст, только channel/message_id — save_run/load_run восстанавливают его
+    из сырой таблицы posts, где лежит только досклеечный оригинал)."""
+    final: list[Post] = []
+    to_merge: list[list[Post]] = []
+    for group in kept_groups:
+        by_channel: dict[str, list[Post]] = {}
+        for p in group:
+            by_channel.setdefault(p.channel, []).append(p)
+        for channel_posts in by_channel.values():
+            if len(channel_posts) > 1:
+                to_merge.append(sorted(channel_posts, key=lambda p: p.posted_at))
+            else:
+                final.extend(channel_posts)
+
+    for start in range(0, len(to_merge), BATCH_SIZE):
+        batch = to_merge[start : start + BATCH_SIZE]
+        items = classifier.merge_story_batch(batch)
+        by_group = {item.group_index: item for item in items}
+        for local_idx, group in enumerate(batch):
+            item = by_group.get(local_idx)
+            if item is None or not item.is_same_story:
+                # LLM не ответила, либо явно решила, что это разные, не связанные
+                # друг с другом новости одного канала (см. _STORY_MERGE_INSTRUCTION) —
+                # не теряем посты и не выдумываем историю, печатаем как раньше отдельно
+                final.extend(group)
+                continue
+            anchor = group[-1]  # самый свежий пост несёт актуальное состояние истории
+            merged_text = f"**{item.headline.strip()}**\n\n{item.summary_text.strip()}"
+            final.append(replace(anchor, text=merged_text))
+            merged_anchor_keys.add(_key(anchor))
+            importance_by_key[_key(anchor)] = max(
+                importance_by_key.get(_key(p), 0) for p in group
+            )
+            if personal_by_key is not None:
+                personal_by_key[_key(anchor)] = max(
+                    personal_by_key.get(_key(p), 0) for p in group
+                )
+            photo_relevance_by_key[_key(anchor)] = max(
+                photo_relevance_by_key.get(_key(p), 1) for p in group
+            )
+            for p in group[:-1]:
+                outcomes[_key(p)] = PostOutcome(
+                    p, False, "story_merge",
+                    f"объединено с {anchor.channel}/{anchor.message_id} "
+                    "в одну статью о развитии истории за день",
+                )
+
+    return final
 
 
 def refresh_profile_summary(
@@ -222,14 +308,22 @@ def _classify_posts(
 
     embedder = GeminiEmbedder(config)
     paraphrase_clusters = find_paraphrase_clusters(news, embedder)
-    final_news = _resolve_paraphrase(classifier, paraphrase_clusters, outcomes)
+    kept_groups = _resolve_paraphrase(classifier, paraphrase_clusters, outcomes)
+    merged_anchor_keys: set[Key] = set()
+    final_news = _merge_story_arcs(
+        classifier, kept_groups, outcomes, importance_by_key, photo_relevance_by_key,
+        merged_anchor_keys, personal_by_key,
+    )
 
     if history:
         final_news, excluded_by_history = filter_against_history(
             final_news, history, classifier, embedder
         )
         for p, reason in excluded_by_history:
-            outcomes[_key(p)] = PostOutcome(p, False, "history_dedup", reason)
+            outcomes[_key(p)] = PostOutcome(
+                p, False, "history_dedup", reason,
+                merged_text=p.text if _key(p) in merged_anchor_keys else "",
+            )
 
     for p in final_news:
         generic = importance_by_key.get(_key(p), 0)
@@ -240,6 +334,7 @@ def _classify_posts(
             importance=generic,
             personal_importance=personal,
             final_importance=final_importance(generic, personal, weight),
+            merged_text=p.text if _key(p) in merged_anchor_keys else "",
         )
 
     return [outcomes[_key(p)] for p in posts]
@@ -293,8 +388,11 @@ def save_run(
         conn,
         run_id,
         [
-            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.photo_relevance, o.importance,
-             o.personal_importance, o.final_importance)
+            (
+                o.post.channel, o.post.message_id, o.included, o.stage, o.reason,
+                o.photo_relevance, o.importance, o.personal_importance,
+                o.final_importance, o.merged_text,
+            )
             for o in outcomes
         ],
     )
@@ -302,22 +400,30 @@ def save_run(
 
 
 def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
-    """Восстанавливает PostOutcome сохранённого прогона (без обращения к LLM)."""
+    """Восстанавливает PostOutcome сохранённого прогона (без обращения к LLM).
+
+    Если у outcome есть merged_text (склейка развивающейся истории, см.
+    _merge_story_arcs), восстановленный Post получает этот синтезированный
+    текст вместо сырого текста из posts — иначе якорь склейки после
+    перезагрузки прогона показывал бы досклеечный оригинал."""
     posts_by_key = {_key(p): p for p in load_posts(conn)}
     result = []
     for (
         channel, message_id, included, stage, reason, photo_relevance, importance,
-        personal_importance, final_importance_,
+        personal_importance, final_importance_, merged_text,
     ) in load_outcomes(conn, run_id):
         post = posts_by_key.get((channel, message_id))
         if post is None:
             continue  # пост удалён из posts — не должно происходить, но не валим отчёт
+        if merged_text:
+            post = replace(post, text=merged_text)
         result.append(
             PostOutcome(
                 post, included, stage, reason,
                 photo_relevance=photo_relevance, importance=importance,
                 personal_importance=personal_importance,
                 final_importance=final_importance_,
+                merged_text=merged_text,
             )
         )
     return result

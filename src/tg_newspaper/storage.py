@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS pipeline_outcomes (
     -- отбирается номер и строятся опросы. 0 — старый прогон: тогда читатели
     -- берут generic importance (pipeline.effective_importance).
     final_importance INTEGER NOT NULL DEFAULT 0,
+    -- Текст статьи, если он СИНТЕЗИРОВАН пайплайном, а не совпадает с сырым
+    -- постом из таблицы posts — сейчас единственный случай: LLM-склейка
+    -- нескольких постов одного канала в одну статью о развитии истории за
+    -- день (classifier.merge_story_batch, pipeline._merge_story_arcs).
+    -- Пустая строка (по умолчанию) — использовать текст как есть из posts;
+    -- без этого поля load_run восстанавливал бы для якоря склейки исходный
+    -- досклеечный текст, а не сводную статью, которую пайплайн реально
+    -- отобрал для печати.
+    merged_text TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (run_id, channel, message_id)
 );
 
@@ -224,6 +233,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "UPDATE pipeline_outcomes SET photo_relevance = 3 WHERE needs_photo = 1"
             )
 
+    if "merged_text" not in outcome_columns:
+        conn.execute(
+            "ALTER TABLE pipeline_outcomes ADD COLUMN merged_text TEXT NOT NULL DEFAULT ''"
+        )
+
     conn.commit()
 
 
@@ -278,18 +292,18 @@ def create_run(
 def save_outcomes(
     conn: sqlite3.Connection,
     run_id: int,
-    rows: list[tuple[str, int, bool, str, str, int, int, int, int]],
+    rows: list[tuple[str, int, bool, str, str, int, int, int, int, str]],
 ) -> None:
     """rows: (channel, message_id, included, stage, reason, photo_relevance,
-    importance, personal_importance, final_importance)."""
+    importance, personal_importance, final_importance, merged_text)."""
     conn.executemany(
         "INSERT INTO pipeline_outcomes "
         "(run_id, channel, message_id, included, stage, reason, photo_relevance, importance, "
-        "personal_importance, final_importance) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "personal_importance, final_importance, merged_text) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (run_id, ch, mid, int(inc), stage, reason, photo_relevance, importance, personal, final)
-            for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final in rows
+            (run_id, ch, mid, int(inc), stage, reason, photo_relevance, importance, personal, final, merged_text)
+            for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final, merged_text in rows
         ],
     )
     conn.commit()
@@ -312,16 +326,16 @@ def list_runs(conn: sqlite3.Connection) -> list[Run]:
 
 def load_outcomes(
     conn: sqlite3.Connection, run_id: int
-) -> list[tuple[str, int, bool, str, str, int, int, int, int]]:
+) -> list[tuple[str, int, bool, str, str, int, int, int, int, str]]:
     rows = conn.execute(
         "SELECT channel, message_id, included, stage, reason, photo_relevance, importance, "
-        "personal_importance, final_importance "
+        "personal_importance, final_importance, merged_text "
         "FROM pipeline_outcomes WHERE run_id = ?",
         (run_id,),
     ).fetchall()
     return [
-        (ch, mid, bool(inc), stage, reason, photo_relevance, importance, personal, final)
-        for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final in rows
+        (ch, mid, bool(inc), stage, reason, photo_relevance, importance, personal, final, merged_text)
+        for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final, merged_text in rows
     ]
 
 
