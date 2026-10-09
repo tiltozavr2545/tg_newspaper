@@ -9,6 +9,9 @@
 Запуск: uv run python scripts/render_preview.py [run_id] [--pages N]
 Без run_id — берёт последний сохранённый прогон.
 Результат — data/preview_run_<id>_1.png, _2.png, ... (не больше --pages штук).
+Побочный эффект: состав собранного номера записывается в БД (issue_posts) как
+"уже напечатанное" — по нему дедуплицируются следующие прогоны. Повторный
+запуск по тому же прогону заменяет состав.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from __future__ import annotations
 import argparse
 
 from tg_newspaper.config import load_config
-from tg_newspaper.pipeline import NEWSPAPER_MAX_PAGES, build_newspaper, load_run
+from tg_newspaper.pipeline import NEWSPAPER_MAX_PAGES, build_newspaper, load_run, save_newspaper_issue
 from tg_newspaper.storage import connect, list_runs
 
 
@@ -52,6 +55,9 @@ def main() -> None:
         run_date=run.period_end or run.started_at,
         max_pages=args.pages,
     )
+    # Состав номера — это "уже напечатанное" для дедупа следующих прогонов;
+    # повторный запуск по тому же прогону заменяет состав, а не дописывает.
+    save_newspaper_issue(conn, run.run_id, result)
     pages_list = "\n".join(f"  {p}" for p in result.pages)
     print(
         f"Прогон #{run.run_id}: {included_count} новостей → {len(result.pages)} полос(ы) "

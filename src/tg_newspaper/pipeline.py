@@ -29,7 +29,8 @@ from .storage import (
     create_run,
     load_outcomes,
     load_posts,
-    load_recent_included_posts,
+    load_recent_issue_posts,
+    save_issue,
     save_outcomes,
     save_posts,
 )
@@ -143,7 +144,7 @@ def _classify_posts(
 ) -> list[PostOutcome]:
     """Прогоняет эвристики → копипаст-дедуп → LLM-классификацию → дедуп
     пересказов → (если передан history) дедуп против уже опубликованного за
-    последние прогоны, над уже готовым списком постов (одного окна), и
+    последние собранные номера, над уже готовым списком постов (одного окна), и
     возвращает результат по каждому из них."""
     outcomes: dict[Key, PostOutcome] = {}
 
@@ -209,7 +210,7 @@ def run_pipeline_for_last_24h(config: Config) -> RunResult:
     # дублей благодаря уникальности (channel, message_id) в save_posts).
     posts = load_posts(conn, since=since, until=run_started_at)
 
-    history = load_recent_included_posts(conn, HISTORY_RUNS_WINDOW)
+    history = load_recent_issue_posts(conn, HISTORY_RUNS_WINDOW)
     outcomes = _classify_posts(config, posts, history=history)
     run_id = save_run(conn, outcomes, run_started_at, since, run_started_at)
     return RunResult(run_id, since, run_started_at, outcomes)
@@ -272,6 +273,12 @@ class NewspaperResult:
     pages: list[Path]
     dropped: list[Post]  # не поместились в фиксированный номер и не были сокращены
     shortened_count: int  # сколько новостей сократила нейронка ради места
+    # Что реально ушло в последний успешный render_pages — с итоговым (после
+    # сокращения нейронкой) текстом. Не то же самое, что included-исходы
+    # прогона: часть из них выброшена (dropped). Именно этот список
+    # сохраняется как состав номера (save_newspaper_issue) и служит историей
+    # для дедупа следующих прогонов.
+    published: list[Post]
 
 
 def build_newspaper(
@@ -299,7 +306,7 @@ def build_newspaper(
     ограничен четырьмя полосами, достаточно быстро на практике."""
     included = [o for o in outcomes if o.included]
     if not included:
-        return NewspaperResult([], [], 0)
+        return NewspaperResult([], [], 0, [])
 
     importance_by_key: dict[Key, int] = {_key(o.post): o.importance for o in included}
     posts = [o.post for o in included]
@@ -321,7 +328,7 @@ def build_newspaper(
                     "номер собран: %d стр., сокращено=%d, выброшено из-за нехватки места=%d",
                     len(out_paths), shortened_count, len(dropped),
                 )
-            return NewspaperResult(out_paths, dropped, shortened_count)
+            return NewspaperResult(out_paths, dropped, shortened_count, posts)
 
         to_shorten_keys = {
             _key(p)
@@ -351,4 +358,13 @@ def build_newspaper(
         leftover_keys = {_key(p) for p in leftover}
         posts = [p for p in posts if _key(p) not in leftover_keys]
         if not posts:
-            return NewspaperResult(out_paths, dropped, shortened_count)
+            return NewspaperResult(out_paths, dropped, shortened_count, [])
+
+
+def save_newspaper_issue(conn: sqlite3.Connection, run_id: int, result: NewspaperResult) -> None:
+    """Фиксирует состав только что собранного номера прогона run_id как
+    "напечатанное" — историю для дедупа следующих прогонов. Вызывается после
+    каждой сборки номера (сейчас scripts/render_preview.py, позже — печать,
+    Этап 4); повторная сборка по тому же run_id заменяет состав, а не
+    дописывает (см. storage.save_issue)."""
+    save_issue(conn, run_id, result.published)

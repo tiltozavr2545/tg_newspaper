@@ -58,6 +58,33 @@ CREATE TABLE IF NOT EXISTS pipeline_outcomes (
     importance INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, channel, message_id)
 );
+
+-- Состав РЕАЛЬНО собранного номера: какие посты и с каким текстом ушли в
+-- последний успешный рендер полос (pipeline.build_newspaper). Это не то же
+-- самое, что pipeline_outcomes.included=1: included значит лишь "прошёл
+-- отбор Этапа 2", а в номер фиксированного объёма часть таких постов не
+-- влезает и выбрасывается, часть сокращается нейронкой. Дедупликация против
+-- уже опубликованного (history_dedup) должна опираться именно на напечатанное,
+-- иначе новость, не влезшая в номер, на следующий день блокировалась бы как
+-- "уже была в газете".
+--
+-- text — напечатанный текст (после сокращения нейронкой, если сокращали), а
+-- не исходный из posts: именно его читатель видел на бумаге, с ним и
+-- сравниваем новых кандидатов.
+--
+-- Номер по одному run_id можно собрать несколько раз (render_preview гоняют
+-- повторно), поэтому повторная сборка ЗАМЕНЯЕТ состав номера этого прогона
+-- (storage.save_issue), а не дописывает. Прогон без строк в этой таблице —
+-- номер по нему не собирали, в историю дедупа он не входит. Номер, в который
+-- не вошло ни одного поста, строк не оставляет и "собранным" не считается.
+CREATE TABLE IF NOT EXISTS issue_posts (
+    run_id INTEGER NOT NULL REFERENCES pipeline_runs(run_id),
+    channel TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    assembled_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, channel, message_id)
+);
 """
 
 
@@ -210,33 +237,61 @@ def load_outcomes(
     ]
 
 
-def load_recent_included_posts(conn: sqlite3.Connection, limit_runs: int) -> list[Post]:
-    """Посты, дошедшие до печати (included=1) в последних limit_runs
-    сохранённых прогонах — окно сравнения для дедупликации против уже
-    опубликованного (Этап 2 п.4). "Последние прогоны", не "последние дни":
-    проект запускается по кнопке, а не по расписанию, календарное окно не
-    имеет смысла (см. AGENTS.md, "Запуск")."""
+def save_issue(conn: sqlite3.Connection, run_id: int, posts: list[Post]) -> None:
+    """Записывает состав собранного номера прогона run_id (текст — тот, что
+    реально напечатан, см. issue_posts в SCHEMA). Повторная сборка по тому же
+    run_id заменяет прежний состав целиком: старые строки удаляются и вставляются
+    новые в одной транзакции, чтобы пост, выпавший при пересборке, не остался в
+    истории дедупа как "напечатанный". Пустой posts просто стирает состав."""
+    assembled_at = datetime.now(timezone.utc).isoformat()
+    with conn:  # одна транзакция: либо старый состав, либо новый, не смесь
+        conn.execute("DELETE FROM issue_posts WHERE run_id = ?", (run_id,))
+        conn.executemany(
+            "INSERT INTO issue_posts (run_id, channel, message_id, text, assembled_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(run_id, p.channel, p.message_id, p.text, assembled_at) for p in posts],
+        )
+
+
+def load_recent_issue_posts(conn: sqlite3.Connection, limit_issues: int) -> list[Post]:
+    """Посты из последних limit_issues СОБРАННЫХ номеров (прогонов, у которых
+    есть запись в issue_posts) с напечатанным текстом — история для
+    дедупликации против уже опубликованного (Этап 2 п.4). Считаем номера, а не
+    прогоны и не дни: проект запускается по кнопке, и прогоны, по которым номер
+    так и не собирали, не должны вытеснять реально напечатанное из окна. "Последние"
+    — по run_id (порядок прогонов), повторная пересборка старого номера его
+    место в окне не меняет. Метаданные поста (posted_at, медиа) берутся из
+    posts, текст — из issue_posts. Если один пост попал в несколько номеров,
+    возвращается один раз — с текстом из самого свежего."""
     rows = conn.execute(
         """
-        SELECT DISTINCT p.channel, p.message_id, p.posted_at, p.text, p.has_media, p.media_type
-        FROM pipeline_outcomes o
-        JOIN posts p ON p.channel = o.channel AND p.message_id = o.message_id
-        WHERE o.included = 1
-          AND o.run_id IN (SELECT run_id FROM pipeline_runs ORDER BY run_id DESC LIMIT ?)
-        """,
-        (limit_runs,),
-    ).fetchall()
-    return [
-        Post(
-            channel=channel,
-            message_id=message_id,
-            posted_at=datetime.fromisoformat(posted_at),
-            text=text,
-            has_media=bool(has_media),
-            media_type=media_type,
+        SELECT i.channel, i.message_id, p.posted_at, i.text, p.has_media, p.media_type
+        FROM issue_posts i
+        JOIN posts p ON p.channel = i.channel AND p.message_id = i.message_id
+        WHERE i.run_id IN (
+            SELECT DISTINCT run_id FROM issue_posts ORDER BY run_id DESC LIMIT ?
         )
-        for channel, message_id, posted_at, text, has_media, media_type in rows
-    ]
+        ORDER BY i.run_id DESC
+        """,
+        (limit_issues,),
+    ).fetchall()
+    seen: set[tuple[str, int]] = set()
+    result: list[Post] = []
+    for channel, message_id, posted_at, text, has_media, media_type in rows:
+        if (channel, message_id) in seen:
+            continue
+        seen.add((channel, message_id))
+        result.append(
+            Post(
+                channel=channel,
+                message_id=message_id,
+                posted_at=datetime.fromisoformat(posted_at),
+                text=text,
+                has_media=bool(has_media),
+                media_type=media_type,
+            )
+        )
+    return result
 
 
 def save_posts(conn: sqlite3.Connection, posts: list[Post]) -> None:
