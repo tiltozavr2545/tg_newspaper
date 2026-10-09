@@ -45,11 +45,11 @@ src/tg_newspaper/          — сам пайплайн
   collector.py             — сбор истории каналов через Telethon (Этап 1)
   filtering.py, dedup.py,
   paraphrase_dedup.py,
-  history_dedup.py         — эвристики и дедупликация (Этап 2)
+  history_dedup.py         — дедупликация против напечатанного в последних 5 собранных номерах (Этап 2)
   classifier.py            — LLM: новость/не новость, значимость, сокращение текста (Gemini)
   layout.py                — вёрстка и рендер газетного номера в PNG (Этап 3, Playwright/Chromium)
   pipeline.py               — единый прогон: сбор → фильтрация → сборка номера
-  storage.py                — SQLite-хранилище постов и истории прогонов
+  storage.py                — SQLite-хранилище постов, истории прогонов и состава собранных номеров
 scripts/
   console.py               — локальная веб-консоль с кнопкой "Собрать газету"
   render_preview.py        — ручная сверка вёрстки по уже сохранённому прогону
