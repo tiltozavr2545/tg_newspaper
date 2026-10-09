@@ -324,18 +324,28 @@ def _build_clusters_prompt(clusters: list[list[Post]]) -> str:
     return "\n".join(lines)
 
 
+def make_gemini_client(api_key: str, base_url: str = "", timeout_ms: int | None = None):
+    """Единственное место, где создаётся клиент Gemini: и классификатор, и
+    кнопка "Проверить" в мастере настройки (setup_wizard.py) идут через него,
+    чтобы проверка шла тем же путём (включая прокси GEMINI_BASE_URL), что и
+    реальные вызовы. timeout_ms нужен только проверке — классификатор его не
+    задаёт и ведёт себя как раньше."""
+    kwargs = {}
+    if base_url:
+        kwargs["base_url"] = base_url
+    if timeout_ms is not None:
+        kwargs["timeout"] = timeout_ms
+    http_options = types.HttpOptions(**kwargs) if kwargs else None
+    return genai.Client(api_key=api_key, http_options=http_options)
+
+
 class GeminiClassifier:
     def __init__(self, config: Config) -> None:
         if not config.gemini_api_key:
             raise RuntimeError(
                 "GEMINI_API_KEY не задан в .env — LLM-классификация недоступна."
             )
-        http_options = (
-            types.HttpOptions(base_url=config.gemini_base_url)
-            if config.gemini_base_url
-            else None
-        )
-        self._client = genai.Client(api_key=config.gemini_api_key, http_options=http_options)
+        self._client = make_gemini_client(config.gemini_api_key, config.gemini_base_url)
         self._model = config.gemini_model
 
     def _models_to_try(self) -> list[str]:
