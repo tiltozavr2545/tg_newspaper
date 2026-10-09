@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 from datetime import datetime
 
+from .feedback import LearningStats
 from .pipeline import PostOutcome
 from .storage import Run
 
@@ -69,6 +70,9 @@ STYLE = """
   .badge.photo-none { background: #eef1f5; color: #55606b; }
   .badge.photo-nice { background: #fff3d6; color: #8a5a00; }
   .badge.photo-essential { background: #fde2df; color: #a3231b; }
+  .scores { white-space: nowrap; font-size: 12px; color: #444; }
+  .learning { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
+              padding: 10px 14px; margin-bottom: 20px; font-size: 13px; color: #333; }
   .text-cell { max-width: 480px; }
   .reason-cell { max-width: 320px; color: #444; }
   .chan { color: #666; font-size: 12px; }
@@ -157,7 +161,22 @@ def _row_html(outcome: PostOutcome) -> str:
       <td>{html.escape(stage)}</td>
       <td class="reason-cell">{reason}</td>
       <td>{photo_badge}</td>
+      <td>{_score_cell(outcome)}</td>
     </tr>"""
+
+
+def _score_cell(outcome: PostOutcome) -> str:
+    """Оценки значимости: общая (generic), для читателя (personal) и итоговая.
+    Для отсеянных — прочерк; для старых прогонов (final_importance == 0) —
+    только общая, как раньше; personal == 0 (пустой профиль) не показывается."""
+    if not outcome.included or outcome.importance <= 0:
+        return '<span class="badge photo-unknown">—</span>'
+    parts = [f"общая <b>{outcome.importance}</b>"]
+    if outcome.final_importance > 0:
+        if outcome.personal_importance > 0:
+            parts.append(f"для вас <b>{outcome.personal_importance}</b>")
+        parts.append(f"итог <b>{outcome.final_importance}</b>")
+    return '<span class="scores">' + " · ".join(parts) + "</span>"
 
 
 def _nav_html(runs: list[Run], current_run_id: int | None) -> str:
@@ -237,6 +256,7 @@ def render_run_page(
         <th>Этап</th>
         <th>Причина</th>
         <th>Фото</th>
+        <th>Значимость</th>
       </tr>
     </thead>
     <tbody>
@@ -282,11 +302,39 @@ def _feedback_banners_html(onboarded: bool, issue_survey_run_id: int | None) -> 
     return "\n  ".join(parts)
 
 
+def _learning_html(stats: LearningStats | None) -> str:
+    """Компактный показатель "учится ли газета": число опросов и среднее
+    совпадение порядка читателя с моделью (tau-b, -1..1) — последние 5 против
+    предыдущих 5. Рост — модель всё лучше угадывает порядок читателя. Без
+    графиков и JS: пока данных мало, честно пишем, что сравнивать нечего."""
+    if stats is None or stats.submitted == 0:
+        return ""
+    if stats.recent_avg is None:
+        body = "совпадение ещё не определено (у модели одинаковые оценки в опросах)"
+    elif stats.previous_avg is None:
+        body = (
+            f"совпадение порядка с моделью (последние опросы): <b>{stats.recent_avg:+.2f}</b>; "
+            "для сравнения нужно хотя бы 6 опросов"
+        )
+    else:
+        delta = stats.recent_avg - stats.previous_avg
+        trend = "растёт" if delta > 0.05 else "падает" if delta < -0.05 else "без изменений"
+        body = (
+            f"совпадение порядка с моделью: последние 5 — <b>{stats.recent_avg:+.2f}</b>, "
+            f"предыдущие 5 — {stats.previous_avg:+.2f} ({trend})"
+        )
+    return (
+        f'<div class="learning"><strong>Учится ли газета:</strong> опросов отправлено '
+        f"{stats.submitted}; {body}.</div>"
+    )
+
+
 def render_index_page(
     runs: list[Run],
     error: str | None = None,
     onboarded: bool = True,
     issue_survey_run_id: int | None = None,
+    learning: LearningStats | None = None,
 ) -> str:
     if not runs:
         list_html = (
@@ -313,6 +361,7 @@ def render_index_page(
   <h1>TG Newspaper</h1>
   <p class="subtitle">Каждый прогон — сбор постов за последние сутки от нажатия кнопки и их отбор.</p>
   {_feedback_banners_html(onboarded, issue_survey_run_id)}
+  {_learning_html(learning)}
   {error_html}
   {_RUN_BUTTON_HTML}
   {list_html}

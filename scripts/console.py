@@ -31,6 +31,7 @@ from tg_newspaper.feedback import (
     agreement,
     create_issue_survey,
     create_onboarding_surveys,
+    learning_stats,
     load_item_texts,
     validate_ranks,
 )
@@ -165,6 +166,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                     list_runs(conn),
                     onboarded=load_profile(conn).onboarded,
                     issue_survey_run_id=run_id if pending else None,
+                    learning=learning_stats(conn),
                 )
             )
             return

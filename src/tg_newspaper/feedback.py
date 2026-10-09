@@ -19,7 +19,7 @@ import random
 import sqlite3
 from dataclasses import dataclass
 
-from .pipeline import PostOutcome, load_run
+from .pipeline import PostOutcome, effective_importance, load_run
 from .storage import (
     create_survey,
     list_runs,
@@ -47,12 +47,12 @@ ONBOARDING_POOL_LIMIT = 60
 def model_score(outcome: PostOutcome) -> int:
     """ЕДИНСТВЕННОЕ место, откуда в опросах берётся "оценка модели" поста.
 
-    Сейчас это generic-importance классификатора (1-5, 0 — неизвестно). Часть B
-    (Этап 6 п.4) заменит тело на итоговую персональную оценку — подбор постов,
-    метрика совпадения и фиксация model_score в feedback_items подхватят её
-    без правок, потому что нигде больше outcome.importance не читается.
+    Это итоговая оценка (Этап 6 п.4: смесь generic и персональной, у старых
+    прогонов — generic, 0 — неизвестно) через pipeline.effective_importance.
+    Подбор постов, метрика совпадения и фиксация model_score в feedback_items
+    берут её отсюда и нигде больше outcome.importance напрямую не читают.
     """
-    return outcome.importance
+    return effective_importance(outcome)
 
 
 @dataclass(frozen=True)
@@ -298,3 +298,37 @@ def load_item_texts(
     printed = load_issue_texts(conn, run_id) if survey_kind == "issue" and run_id else {}
     originals = load_post_texts(conn, [k for k in keys if k not in printed])
     return {k: printed.get(k, originals.get(k, "")) for k in keys}
+
+
+# Окно для показателя "учится ли газета": среднее совпадение последних N
+# опросов против предыдущих N. Пять — как размер опроса: достаточно, чтобы
+# сгладить шум одного ранжирования, и набирается за пару недель.
+LEARNING_WINDOW = 5
+
+
+@dataclass(frozen=True)
+class LearningStats:
+    """Сводка для главной консоли: сколько опросов отправлено, среднее
+    совпадение (Kendall tau-b) последних LEARNING_WINDOW опросов и предыдущих
+    LEARNING_WINDOW (None — таких опросов нет или совпадение не определено)."""
+    submitted: int
+    recent_avg: float | None
+    previous_avg: float | None
+
+
+def learning_stats(conn: sqlite3.Connection) -> LearningStats:
+    """Считает LearningStats по всем отправленным опросам (онбординг и после
+    номера), по порядку отправки. Опросы без agreement (метрика не определена:
+    у модели все оценки равны) считаются в submitted, но не в средних."""
+    surveys = [
+        s for kind in ("onboarding", "issue") for s in list_surveys(conn, kind) if s.submitted
+    ]
+    surveys.sort(key=lambda s: (s.submitted_at, s.survey_id))
+    values = [s.agreement for s in surveys if s.agreement is not None]
+    recent = values[-LEARNING_WINDOW:]
+    previous = values[-2 * LEARNING_WINDOW:-LEARNING_WINDOW]
+
+    def avg(xs: list[float]) -> float | None:
+        return sum(xs) / len(xs) if xs else None
+
+    return LearningStats(len(surveys), avg(recent), avg(previous))

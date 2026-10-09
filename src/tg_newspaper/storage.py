@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS pipeline_outcomes (
     -- не определено (пост не дошёл до LLM-классификации либо прогон сделан
     -- до появления этого поля).
     importance INTEGER NOT NULL DEFAULT 0,
+    -- Персональная оценка (Этап 6 п.4): насколько пост интересен именно
+    -- читателю (1-5), из того же вызова классификации. 0 — не запрашивалась
+    -- (пустой профиль, пост не дошёл до классификации, старый прогон).
+    personal_importance INTEGER NOT NULL DEFAULT 0,
+    -- Итоговая оценка = смесь importance и personal_importance с весом,
+    -- зависящим от числа отзывов (personalization.final_importance). По ней
+    -- отбирается номер и строятся опросы. 0 — старый прогон: тогда читатели
+    -- берут generic importance (pipeline.effective_importance).
+    final_importance INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, channel, message_id)
 );
 
@@ -196,6 +205,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "importance" not in outcome_columns:
         conn.execute("ALTER TABLE pipeline_outcomes ADD COLUMN importance INTEGER NOT NULL DEFAULT 0")
 
+    # Этап 6 п.4: у старых прогонов 0 — "неизвестно" (не выдумываем задним числом).
+    for column in ("personal_importance", "final_importance"):
+        if column not in outcome_columns:
+            conn.execute(
+                f"ALTER TABLE pipeline_outcomes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+            )
+
     if "photo_relevance" not in outcome_columns:
         conn.execute(
             "ALTER TABLE pipeline_outcomes ADD COLUMN photo_relevance INTEGER NOT NULL DEFAULT 1"
@@ -262,16 +278,18 @@ def create_run(
 def save_outcomes(
     conn: sqlite3.Connection,
     run_id: int,
-    rows: list[tuple[str, int, bool, str, str, int, int]],
+    rows: list[tuple[str, int, bool, str, str, int, int, int, int]],
 ) -> None:
-    """rows: (channel, message_id, included, stage, reason, photo_relevance, importance)."""
+    """rows: (channel, message_id, included, stage, reason, photo_relevance,
+    importance, personal_importance, final_importance)."""
     conn.executemany(
         "INSERT INTO pipeline_outcomes "
-        "(run_id, channel, message_id, included, stage, reason, photo_relevance, importance) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(run_id, channel, message_id, included, stage, reason, photo_relevance, importance, "
+        "personal_importance, final_importance) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (run_id, ch, mid, int(inc), stage, reason, photo_relevance, importance)
-            for ch, mid, inc, stage, reason, photo_relevance, importance in rows
+            (run_id, ch, mid, int(inc), stage, reason, photo_relevance, importance, personal, final)
+            for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final in rows
         ],
     )
     conn.commit()
@@ -294,15 +312,16 @@ def list_runs(conn: sqlite3.Connection) -> list[Run]:
 
 def load_outcomes(
     conn: sqlite3.Connection, run_id: int
-) -> list[tuple[str, int, bool, str, str, int, int]]:
+) -> list[tuple[str, int, bool, str, str, int, int, int, int]]:
     rows = conn.execute(
-        "SELECT channel, message_id, included, stage, reason, photo_relevance, importance "
+        "SELECT channel, message_id, included, stage, reason, photo_relevance, importance, "
+        "personal_importance, final_importance "
         "FROM pipeline_outcomes WHERE run_id = ?",
         (run_id,),
     ).fetchall()
     return [
-        (ch, mid, bool(inc), stage, reason, photo_relevance, importance)
-        for ch, mid, inc, stage, reason, photo_relevance, importance in rows
+        (ch, mid, bool(inc), stage, reason, photo_relevance, importance, personal, final)
+        for ch, mid, inc, stage, reason, photo_relevance, importance, personal, final in rows
     ]
 
 
@@ -395,7 +414,7 @@ class ReaderProfile:
     disinterests: str = ""
     # None — онбординг ещё не пройден и не пропущен.
     onboarded_at: datetime | None = None
-    # Заполняются персональной оценкой (Этап 6 п.4); пока только хранятся.
+    # Заполняются pipeline.refresh_profile_summary (Этап 6 п.4).
     summary: str | None = None
     summary_updated_at: datetime | None = None
 
@@ -493,8 +512,8 @@ def save_profile(
 
 
 def save_profile_summary(conn: sqlite3.Connection, summary: str) -> None:
-    """Краткий профиль от LLM (часть B). Здесь только запись — вызывать будет
-    персональная оценка, когда появится."""
+    """Краткий профиль от LLM (Этап 6 п.4). Здесь только запись — вызывает
+    pipeline.refresh_profile_summary перед классификацией."""
     with conn:
         conn.execute("INSERT OR IGNORE INTO reader_profile (id) VALUES (1)")
         conn.execute(
