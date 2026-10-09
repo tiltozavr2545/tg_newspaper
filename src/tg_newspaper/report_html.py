@@ -89,6 +89,11 @@ STYLE = """
   .error-box { background: #fbe8e8; border: 1px solid #f0b8b8; color: #7a1a1a;
                border-radius: 8px; padding: 14px 18px; margin-bottom: 20px;
                white-space: pre-wrap; font-size: 13px; }
+  /* Блоки Этапа 6 (онбординг / опрос) на главной и страницах feedback_html. */
+  .banner { background: #fff3d6; border: 1px solid #ecd28a; color: #5c4200;
+            border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; }
+  .banner a { font-weight: 600; }
+  .banner.info { background: #e8f0fe; border-color: #b9cdf5; color: #1d3a7a; }
 </style>
 """
 
@@ -258,7 +263,31 @@ _RUN_BUTTON_HTML = """
 """
 
 
-def render_index_page(runs: list[Run], error: str | None = None) -> str:
+def _feedback_banners_html(onboarded: bool, issue_survey_run_id: int | None) -> str:
+    """Блоки Этапа 6 на главной: онбординг (пока не пройден — заметно, и
+    запуск прогона заблокирован) и опрос по последнему собранному номеру."""
+    parts = []
+    if not onboarded:
+        parts.append(
+            '<div class="banner"><strong>Сначала расскажите о себе.</strong> '
+            "Пока вы не прошли короткий онбординг, прогон не запустится — газета "
+            'подбирается под ваши интересы. <a href="/onboarding">Пройти онбординг →</a></div>'
+        )
+    if issue_survey_run_id is not None:
+        parts.append(
+            '<div class="banner info"><strong>Оцените прошлый номер.</strong> '
+            "Расставьте 5 постов по важности — так газета научится отбирать "
+            f'лучше. <a href="/issue_survey/{issue_survey_run_id}">Оценить →</a></div>'
+        )
+    return "\n  ".join(parts)
+
+
+def render_index_page(
+    runs: list[Run],
+    error: str | None = None,
+    onboarded: bool = True,
+    issue_survey_run_id: int | None = None,
+) -> str:
     if not runs:
         list_html = (
             "<p>Пока нет ни одного сохранённого прогона — нажмите кнопку выше, "
@@ -283,6 +312,7 @@ def render_index_page(runs: list[Run], error: str | None = None) -> str:
 <body>
   <h1>TG Newspaper</h1>
   <p class="subtitle">Каждый прогон — сбор постов за последние сутки от нажатия кнопки и их отбор.</p>
+  {_feedback_banners_html(onboarded, issue_survey_run_id)}
   {error_html}
   {_RUN_BUTTON_HTML}
   {list_html}

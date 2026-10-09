@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHANNELS_PATH = REPO_ROOT / "config" / "channels.yaml"
 DB_PATH = REPO_ROOT / "data" / "tg_newspaper.db"
+# Переменная окружения, переопределяющая путь к БД. Нужна для ручной проверки
+# консоли на копии базы (чтобы эксперименты с опросами не трогали рабочую
+# data/tg_newspaper.db); в обычной работе не задаётся.
+DB_PATH_ENV = "TG_NEWSPAPER_DB"
 
 # Период сбора — всегда фиксированные последние сутки от момента запуска.
 # Наверстывание пропущенных дней сознательно не делается: не напечаталось — значит не напечаталось,
@@ -49,7 +53,7 @@ def load_config() -> Config:
         api_hash=api_hash,
         session_name=session_name,
         channels=channels,
-        db_path=DB_PATH,
+        db_path=Path(os.environ[DB_PATH_ENV]) if os.environ.get(DB_PATH_ENV) else DB_PATH,
         gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
         gemini_base_url=os.environ.get("GEMINI_BASE_URL", "").strip().rstrip("/"),
