@@ -514,6 +514,22 @@ def build_newspaper(
     dropped: list[Post] = []
     shortened_count = 0
 
+    # Крикливые анонсы для титульной полосы-афиши (layout._cover_page_html).
+    # Отдаём их layout'у колбэком, а не готовым словарём: кто именно попадёт
+    # на афишу, известно только после пагинации — внутри render_pages. Кэш
+    # нужен потому, что render_pages вызывается в цикле заново после каждого
+    # сокращения, а анонс для одной и той же новости от этого не меняется.
+    teaser_cache: dict[Key, tuple[str, str]] = {}
+
+    def teaser_provider(cover_posts: list[Post]) -> dict[Key, tuple[str, str]]:
+        nonlocal classifier
+        missing = [p for p in cover_posts if _key(p) not in teaser_cache]
+        if missing:
+            if classifier is None:
+                classifier = GeminiClassifier(config)
+            teaser_cache.update(classifier.teasers(missing))
+        return {_key(p): teaser_cache[_key(p)] for p in cover_posts if _key(p) in teaser_cache}
+
     while True:
         out_paths, leftover = render_pages(
             posts, out_dir, basename=basename, run_date=run_date,
@@ -521,6 +537,7 @@ def build_newspaper(
             importance_by_key=importance_by_key,
             photo_relevance_by_key=photo_relevance_by_key,
             photo_path_by_key=photo_path_by_key,
+            teaser_provider=teaser_provider,
         )
         if not leftover:
             if dropped:

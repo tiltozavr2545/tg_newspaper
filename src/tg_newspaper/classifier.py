@@ -371,6 +371,46 @@ class ShortenedBatch(BaseModel):
     items: list[ShortenedItem]
 
 
+# Тизеры для титульной полосы-афиши (см. layout._cover_page_html): обложка
+# НЕ печатает тексты статей, она только зазывает внутрь номера, как витрина
+# таблоида — значит ей нужны не обычные нейтральные заголовки, а крикливые
+# анонсы. Берём их у LLM (решение пользователя от 2026-10-06), а не строим
+# шаблоном из заголовка: шаблонная переделка даёт механические обрубки без
+# интриги, ради которой вся афиша и затевалась.
+_TEASER_INSTRUCTION = (
+    _INJECTION_DEFENSE + "\n\n"
+    "Ты делаешь ПЕРВУЮ ПОЛОСУ бумажной газеты в духе таблоида: это витрина "
+    "номера, на ней нет текстов статей — только крикливые анонсы, которые "
+    "заставляют открыть газету и прочитать новость внутри. Для каждого "
+    "поста верни:\n"
+    "- screamer: гигантский заголовок-крик на всю полосу, 1-3 слова "
+    "ЗАГЛАВНЫМИ буквами, обязательно со знаком «?» или «!» на конце "
+    "(примеры тона: «ХВАТИТ!», «КТО ЗАПЛАТИТ?», «ЭТО КОНЕЦ?», "
+    "«ВСЁ ПРОПАЛО!»). Коротко — он печатается кеглем в палец высотой, "
+    "длинное слово просто не влезет;\n"
+    "- teaser: одна строка-подводка под него, 4-9 слов, намекает на суть и "
+    "держит интригу, лучше вопросом («Что скрывают от покупателей?»). Без "
+    "точки на конце.\n\n"
+    "Интригуй формой, но НЕ выдумывай фактов, которых нет в посте, и не "
+    "переворачивай смысл: читатель откроет номер и увидит настоящую "
+    "новость — анонс не должен его обмануть. Для трагедий (смерти, "
+    "катастрофы, насилие) — без игривости и шуток, крик уместен, "
+    "зубоскальство нет.\n\n"
+    "Верни screamer и teaser по каждому посту, сохранив его index, ничего "
+    "не пропустив."
+)
+
+
+class TeaserItem(BaseModel):
+    index: int
+    screamer: str
+    teaser: str
+
+
+class TeaserBatch(BaseModel):
+    items: list[TeaserItem]
+
+
 def _build_batch_prompt(posts: list[Post]) -> str:
     lines = ["Посты для классификации:", ""]
     for i, post in enumerate(posts):
@@ -619,6 +659,30 @@ class GeminiClassifier:
         )
         assert isinstance(parsed, MergedStoryBatch)
         return parsed.items
+
+    def teasers(self, posts: list[Post]) -> dict[tuple[str, int], tuple[str, str]]:
+        """Анонсы для титульной полосы-афиши: {(channel, message_id):
+        (screamer, teaser)}. Зовётся только для горстки новостей, реально
+        попавших на обложку (см. pipeline.build_newspaper), а не для всего
+        номера — это один батч на прогон, не на каждую новость. Посты, для
+        которых модель ничего не вернула, просто остаются без анонса —
+        вызывающий код подставит обычный заголовок (см. layout)."""
+        results: dict[tuple[str, int], tuple[str, str]] = {}
+        for start in range(0, len(posts), BATCH_SIZE):
+            batch = posts[start : start + BATCH_SIZE]
+            contents = _build_batch_prompt(batch)
+            parsed = self._generate_structured(contents, _TEASER_INSTRUCTION, TeaserBatch)
+            assert isinstance(parsed, TeaserBatch)
+            for item in parsed.items:
+                if 0 <= item.index < len(batch):
+                    post = batch[item.index]
+                    results[(post.channel, post.message_id)] = (
+                        item.screamer.strip(),
+                        item.teaser.strip(),
+                    )
+            if start + BATCH_SIZE < len(posts):
+                time.sleep(_INTER_BATCH_DELAY_SECONDS)
+        return results
 
     def shorten_batch(self, posts: list[Post], target_sentences: int) -> list[ShortenedItem]:
         contents = _build_batch_prompt(posts)
