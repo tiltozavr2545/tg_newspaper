@@ -23,6 +23,12 @@ from .filtering import filter_posts
 from .history_dedup import HISTORY_RUNS_WINDOW, filter_against_history
 from .layout import render_pages
 from .paraphrase_dedup import GeminiEmbedder, find_paraphrase_clusters
+from .personalization import (
+    ReaderContext,
+    final_importance,
+    load_reader_context,
+    summary_due,
+)
 from .storage import (
     Post,
     connect,
@@ -33,6 +39,7 @@ from .storage import (
     save_issue,
     save_outcomes,
     save_posts,
+    save_profile_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +65,18 @@ class PostOutcome:
     # Известна только для постов, дошедших до LLM-классификации; 0 —
     # неизвестно (пост отсеян раньше, либо прогон сделан до появления поля).
     importance: int = 0
+    # Персональная оценка (1-5) из того же вызова классификации и итоговая —
+    # смесь с generic по весу, растущему с числом отзывов (Этап 6 п.4,
+    # personalization.final_importance). 0 — неизвестно: пустой профиль (тогда
+    # personal не запрашивалась) либо прогон сделан до появления полей.
+    personal_importance: int = 0
+    final_importance: int = 0
+
+
+def effective_importance(outcome: PostOutcome) -> int:
+    """ЕДИНСТВЕННОЕ место выбора оценки для отбора/сокращения/размера плитки и
+    опросов: итоговая, а у старых прогонов (final_importance == 0) — generic."""
+    return outcome.final_importance or outcome.importance
 
 
 @dataclass(frozen=True)
@@ -139,8 +158,35 @@ def _resolve_paraphrase(
     return kept
 
 
+def refresh_profile_summary(
+    conn: sqlite3.Connection, classifier: GeminiClassifier
+) -> bool:
+    """Лениво обновляет краткий профиль читателя (Этап 6 п.4), если с прошлого
+    обновления отправлено >= SUMMARY_EVERY_SURVEYS новых опросов. Вызывается из
+    прогона ПЕРЕД классификацией: Gemini там и так используется, а из обработчиков
+    опросов консоль Gemini не зовёт. Сбой не валит прогон — логируем и
+    продолжаем со старым summary. Возвращает True, если summary обновлён."""
+    try:
+        if not summary_due(conn):
+            return False
+        summary = classifier.summarize_profile(load_reader_context(conn))
+        if not summary:
+            logger.warning("LLM вернула пустой краткий профиль — оставляю прежний")
+            return False
+        save_profile_summary(conn, summary)
+        logger.info("краткий профиль читателя обновлён")
+        return True
+    except Exception:  # noqa: BLE001 — summary вторичен, прогон важнее
+        logger.exception("не удалось обновить краткий профиль читателя — продолжаю со старым")
+        return False
+
+
 def _classify_posts(
-    config: Config, posts: list[Post], history: list[Post] | None = None
+    config: Config,
+    posts: list[Post],
+    history: list[Post] | None = None,
+    reader: ReaderContext | None = None,
+    classifier: GeminiClassifier | None = None,
 ) -> list[PostOutcome]:
     """Прогоняет эвристики → копипаст-дедуп → LLM-классификацию → дедуп
     пересказов → (если передан history) дедуп против уже опубликованного за
@@ -153,21 +199,24 @@ def _classify_posts(
         if not r.is_news_candidate:
             outcomes[_key(r.post)] = PostOutcome(r.post, False, "heuristic", r.reason or "")
 
-    classifier = GeminiClassifier(config)
+    classifier = classifier or GeminiClassifier(config)
+    weight = reader.weight if reader is not None else 0.0
 
     copypaste_clusters = find_copypaste_clusters(candidates)
     after_copypaste = _resolve_copypaste(classifier, copypaste_clusters, outcomes)
 
-    decisions = classifier.classify(after_copypaste)
+    decisions = classifier.classify(after_copypaste, reader)
     news: list[Post] = []
     photo_relevance_by_key: dict[Key, int] = {}
     importance_by_key: dict[Key, int] = {}
+    personal_by_key: dict[Key, int] = {}
     for p in after_copypaste:
         d = decisions[_key(p)]
         if d.is_news:
             news.append(p)
             photo_relevance_by_key[_key(p)] = d.photo_relevance
             importance_by_key[_key(p)] = d.importance
+            personal_by_key[_key(p)] = d.personal_importance if weight > 0 else 0
         else:
             outcomes[_key(p)] = PostOutcome(p, False, "classification", d.reason)
 
@@ -183,10 +232,14 @@ def _classify_posts(
             outcomes[_key(p)] = PostOutcome(p, False, "history_dedup", reason)
 
     for p in final_news:
+        generic = importance_by_key.get(_key(p), 0)
+        personal = personal_by_key.get(_key(p), 0)
         outcomes[_key(p)] = PostOutcome(
             p, True, "final", "прошёл все этапы отбора",
             photo_relevance=photo_relevance_by_key.get(_key(p), 1),
-            importance=importance_by_key.get(_key(p), 0),
+            importance=generic,
+            personal_importance=personal,
+            final_importance=final_importance(generic, personal, weight),
         )
 
     return [outcomes[_key(p)] for p in posts]
@@ -211,7 +264,15 @@ def run_pipeline_for_last_24h(config: Config) -> RunResult:
     posts = load_posts(conn, since=since, until=run_started_at)
 
     history = load_recent_issue_posts(conn, HISTORY_RUNS_WINDOW)
-    outcomes = _classify_posts(config, posts, history=history)
+
+    classifier = GeminiClassifier(config)
+    # Сначала summary (по накопленным отзывам), потом контекст читателя для
+    # классификации — чтобы свежий summary сразу попал в промпт этого прогона.
+    refresh_profile_summary(conn, classifier)
+    reader = load_reader_context(conn)
+    outcomes = _classify_posts(
+        config, posts, history=history, reader=reader, classifier=classifier
+    )
     run_id = save_run(conn, outcomes, run_started_at, since, run_started_at)
     return RunResult(run_id, since, run_started_at, outcomes)
 
@@ -232,7 +293,8 @@ def save_run(
         conn,
         run_id,
         [
-            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.photo_relevance, o.importance)
+            (o.post.channel, o.post.message_id, o.included, o.stage, o.reason, o.photo_relevance, o.importance,
+             o.personal_importance, o.final_importance)
             for o in outcomes
         ],
     )
@@ -243,7 +305,10 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
     """Восстанавливает PostOutcome сохранённого прогона (без обращения к LLM)."""
     posts_by_key = {_key(p): p for p in load_posts(conn)}
     result = []
-    for channel, message_id, included, stage, reason, photo_relevance, importance in load_outcomes(conn, run_id):
+    for (
+        channel, message_id, included, stage, reason, photo_relevance, importance,
+        personal_importance, final_importance_,
+    ) in load_outcomes(conn, run_id):
         post = posts_by_key.get((channel, message_id))
         if post is None:
             continue  # пост удалён из posts — не должно происходить, но не валим отчёт
@@ -251,6 +316,8 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
             PostOutcome(
                 post, included, stage, reason,
                 photo_relevance=photo_relevance, importance=importance,
+                personal_importance=personal_importance,
+                final_importance=final_importance_,
             )
         )
     return result
@@ -292,11 +359,12 @@ def build_newspaper(
     """Собирает печатный номер фиксированного объёма (не больше max_pages
     альбомных полос A4) из уже прошедших отбор новостей (Этапы 1-2).
 
-    Раскладка — по LLM-оценке значимости (importance, см. classifier.py и
-    _CLASSIFICATION_INSTRUCTION): самое важное печатается в первую очередь
+    Раскладка — по итоговой оценке значимости (effective_importance: смесь
+    generic importance из classifier.py и персональной оценки; у старых
+    прогонов — generic): самое важное печатается в первую очередь
     и получает более крупную плитку (см. layout._assign_tiers). То, что не
     поместилось в отведённый объём:
-    - если оно достаточно значимо (importance > IMPORTANCE_DROP_THRESHOLD)
+    - если оно достаточно значимо (оценка > IMPORTANCE_DROP_THRESHOLD)
       и достаточно длинное, чтобы сокращение было осмысленным — сокращается
       нейронкой (GeminiClassifier.shorten) и полоса собирается заново;
     - иначе — выбрасывается из номера целиком.
@@ -308,7 +376,7 @@ def build_newspaper(
     if not included:
         return NewspaperResult([], [], 0, [])
 
-    importance_by_key: dict[Key, int] = {_key(o.post): o.importance for o in included}
+    importance_by_key: dict[Key, int] = {_key(o.post): effective_importance(o) for o in included}
     posts = [o.post for o in included]
 
     classifier: GeminiClassifier | None = None
