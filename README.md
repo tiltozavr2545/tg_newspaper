@@ -37,6 +37,28 @@ MTProto под пользовательским аккаунтом (Telethon) у
 
 Обратная сторона: сессия Telethon — это файл авторизации личного Telegram-аккаунта, а не просто токен API, хранить её нужно как секрет. Подробнее — в [project-brief.md](docs/project-brief.md), раздел "Механика", и в [AGENTS.md](AGENTS.md).
 
+## Быстрый старт
+
+```bash
+uv sync
+uv run python scripts/console.py
+```
+
+Консоль откроется в браузере (`http://localhost:8420/`, слушает только localhost). Пока проект не настроен, все страницы ведут на **мастер настройки** `/setup` — пройдите четыре шага, править файлы руками не нужно:
+
+1. **Telegram API** — `api_id` и `api_hash` с [my.telegram.org](https://my.telegram.org) → «API development tools». Заходить под **отдельным аккаунтом проекта**, не личным: сессия Telethon — ключ к аккаунту (см. [AGENTS.md](AGENTS.md)). Бот-токен не нужен — сбор идёт по MTProto.
+2. **Вход в Telegram** — телефон → код из Telegram → пароль двухфакторной защиты, если он включён. Получается тот же файл сессии, что у `scripts/telethon_login.py` (он остаётся как терминальная альтернатива).
+3. **Gemini** — ключ из [Google AI Studio](https://aistudio.google.com/app/apikey), модель (по умолчанию `gemini-2.5-flash`) и **обязательный** `GEMINI_BASE_URL` — адрес прокси через Cloudflare Worker (агент работает из РФ, напрямую Gemini отвечает «User location is not supported»; см. раздел про Cloudflare ниже и `cloudflare-worker.js`). Без прокси шаг не считается пройденным. Кнопка «Сохранить и проверить» делает один дешёвый запрос.
+4. **Каналы** — по одному на строку: `username`, `@username` или ссылка `t.me/<username>`. «Сохранить и проверить доступ» проверяет каждый канал через вашу сессию.
+
+Затем консоль ведёт на онбординг по интересам (`/onboarding`) — и можно нажимать «Собрать газету». Настройки можно открыть и изменить позже: ссылка «Настройки» на главной. Секреты при повторном открытии не показываются (только `••••1234`), пустое поле секрета означает «не менять».
+
+Куда пишется: секреты — в `.env` (права 0600), сессия — в `<TG_SESSION_NAME>.session` (0600), каналы — в `config/channels.yaml`; всё это в `.gitignore`.
+
+**Альтернатива — вручную:** скопировать `.env.example` в `.env` и `config/channels.example.yaml` в `config/channels.yaml`, заполнить, затем один раз `uv run python scripts/telethon_login.py`.
+
+**Переменные окружения для проверки без риска для рабочих данных** (в обычной работе не задаются): `TG_NEWSPAPER_DB` — путь к БД, `TG_NEWSPAPER_ENV` — путь к `.env`, `TG_NEWSPAPER_CHANNELS` — путь к `channels.yaml`, `TG_NEWSPAPER_SESSION_DIR` — каталог файла сессии.
+
 ## Структура репозитория
 
 ```
@@ -51,12 +73,14 @@ src/tg_newspaper/          — сам пайплайн
   feedback.py              — подбор постов для опросов читателя и метрика совпадения порядка (Этап 6)
   personalization.py       — персональная оценка значимости: блок о читателе для промпта, вес и итоговая оценка, обновление summary (Этап 6)
   feedback_html.py         — страницы консоли: онбординг, опрос после номера, сравнение (Этап 6)
+  setup_wizard.py          — логика мастера настройки: запись .env, вход в Telegram, проверки Gemini и каналов
+  setup_html.py            — страница мастера настройки консоли
   pipeline.py               — единый прогон: сбор → фильтрация → сборка номера
   storage.py                — SQLite-хранилище постов, истории прогонов, состава собранных номеров, профиля читателя и отзывов
 scripts/
   console.py               — локальная веб-консоль с кнопкой "Собрать газету"
   render_preview.py        — ручная сверка вёрстки по уже сохранённому прогону
-  telethon_login.py        — разовый интерактивный логин Telethon
+  telethon_login.py        — разовый интерактивный логин Telethon (то же делает мастер настройки в консоли)
 ```
 
 Дальше по плану — см. [docs/implementation-plan.md](docs/implementation-plan.md).
@@ -65,9 +89,10 @@ scripts/
 
 Этап 2 (фильтрация спорных случаев) использует Gemini (бесплатный тариф) — см.
 [implementation-plan.md](docs/implementation-plan.md). Настройка ключа — в
-`.env.example` (`GEMINI_API_KEY`, `GEMINI_MODEL`).
+`.env.example` (`GEMINI_API_KEY`, `GEMINI_MODEL`, обязательный `GEMINI_BASE_URL`).
 
-Если агент работает из РФ, Gemini может ответить `400 FAILED_PRECONDITION: User
+Агент работает из РФ, поэтому прокси **обязателен** (`GEMINI_BASE_URL` — шаг Gemini в мастере
+настройки без него не считается пройденным): напрямую Gemini отвечает `400 FAILED_PRECONDITION: User
 location is not supported` (IP/VPN считается неподдерживаемым регионом). Обход —
 свой прокси на **Cloudflare Worker**, тот же приём, что и в соседнем проекте
 [tg_mail_bot](../tg_mail_bot): Google видит адрес Cloudflare, а не IP агента.

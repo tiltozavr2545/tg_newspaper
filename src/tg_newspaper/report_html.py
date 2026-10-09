@@ -359,7 +359,8 @@ def render_index_page(
 </head>
 <body>
   <h1>TG Newspaper</h1>
-  <p class="subtitle">Каждый прогон — сбор постов за последние сутки от нажатия кнопки и их отбор.</p>
+  <p class="subtitle">Каждый прогон — сбор постов за последние сутки от нажатия кнопки и их отбор.
+  · <a href="/setup">Настройки</a></p>
   {_feedback_banners_html(onboarded, issue_survey_run_id)}
   {_learning_html(learning)}
   {error_html}
