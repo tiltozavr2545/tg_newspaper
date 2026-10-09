@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 # text-embedding-004 снят с поддержки (проверено на реальном ключе,
 # 404 NOT_FOUND) — gemini-embedding-001 актуальная GA-модель на замену.
+# Вышла gemini-embedding-2 (GA 2026-04-22), но SIMILARITY_THRESHOLD откалиброван
+# на 001; переход требует перекалибровки порога на живых данных — отложено сознательно.
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 # Лимит Gemini API на batchEmbedContents — максимум текстов в одном запросе.
