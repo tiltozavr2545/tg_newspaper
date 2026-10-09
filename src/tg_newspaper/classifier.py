@@ -36,8 +36,12 @@ from .storage import Post
 logger = logging.getLogger(__name__)
 
 # Если основная модель недоступна (квота 429 / перегрузка 503), пробуем по очереди
-# эти — список моделей, показавший себя рабочим в соседнем проекте (tg_mail_bot).
-_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash"]
+# эти. Порядок (по release notes Gemini API, https://ai.google.dev/gemini-api/docs/changelog,
+# на 2026-10-09): основная gemini-3.5-flash-lite — самая щедрая бесплатная квота;
+# затем более сильная gemini-3.6-flash; алиас gemini-flash-latest — страховка от
+# будущих переименований; gemini-3.1-flash-lite — последний рубеж. Серия 2.5 с
+# 2026-09-18 доступна лишь недавним пользователям, 2.0 отключена — не используем.
+_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]
 
 # Сколько постов/кластеров отдавать модели за один запрос. Держит число вызовов
 # в пределах бесплатной суточной квоты.
@@ -360,7 +364,7 @@ class GeminiClassifier:
     ) -> BaseModel:
         gen_config = types.GenerateContentConfig(
             system_instruction=system_instruction,
-            temperature=0.1,
+            # temperature/top_p/top_k не задаём: с 2026-07-21 они deprecated.
             response_mime_type="application/json",
             response_schema=response_schema,
         )

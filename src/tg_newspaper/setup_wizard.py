@@ -33,7 +33,7 @@ from .config import channels_path, env_path, session_base
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_SESSION_NAME = "tg_newspaper"
 
 # Сетевые операции Telegram не должны подвешивать обработчик: без сети

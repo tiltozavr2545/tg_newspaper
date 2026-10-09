@@ -52,7 +52,7 @@ class SetupView:
     login_stage: str | None = None  # None | "code" | "password"
     login_who: str = ""
     gemini_key_masked: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_base_url: str = ""
     channels_text: str = ""
     flash: dict[str, StepResult] = field(default_factory=dict)

@@ -88,6 +88,6 @@ def load_config() -> Config:
         channels=channels,
         db_path=Path(os.environ[DB_PATH_ENV]) if os.environ.get(DB_PATH_ENV) else DB_PATH,
         gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
-        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
         gemini_base_url=os.environ.get("GEMINI_BASE_URL", "").strip().rstrip("/"),
     )
