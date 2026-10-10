@@ -52,7 +52,14 @@ from tg_newspaper.feedback_html import (
     render_result_page,
     render_survey_page,
 )
-from tg_newspaper.pipeline import load_run, run_pipeline_for_last_24h
+from tg_newspaper.issue_pdf import build_pdf
+from tg_newspaper.pipeline import (
+    assemble_issue,
+    issue_dir,
+    issue_pages,
+    load_run,
+    run_pipeline_for_last_24h,
+)
 from tg_newspaper.report_html import (
     render_error_page,
     render_index_page,
@@ -84,6 +91,18 @@ _flash: dict[str, wizard.StepResult] = {}
 _channel_checks: list[tuple[str, wizard.StepResult]] = []
 _flash_lock = threading.Lock()
 
+# Ошибки сборки номера ({run_id: текст}) — тоже "flash": отбор к этому моменту
+# уже сохранён, поэтому POST всё равно редиректит на страницу прогона, а
+# причина ждёт там до следующего показа.
+_render_errors: dict[int, str] = {}
+# PDF строится в Chromium; два одновременных запроса одного файла не должны
+# писать его параллельно.
+_pdf_lock = threading.Lock()
+
+_ISSUE_PNG_RE = re.compile(r"/issue/([0-9]+)/page_([0-9]+)\.png")
+_ISSUE_PDF_RE = re.compile(r"/issue/([0-9]+)/(a4|a3)\.pdf")
+_RENDER_RE = re.compile(r"/run_([0-9]+)/render")
+
 _SESSION_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]{1,64}")
 
 
@@ -100,6 +119,82 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(303)
         self.send_header("Location", location)
         self.end_headers()
+
+    def _send_file(self, data: bytes, content_type: str, filename: str | None = None) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_issue_file(self, conn, config, path: str) -> bool:
+        """Раздача полос и PDF номера. Пути собираются из чисел, а не из
+        строки запроса (защита от path traversal). True — запрос обработан."""
+        m_png = _ISSUE_PNG_RE.fullmatch(path)
+        m_pdf = _ISSUE_PDF_RE.fullmatch(path)
+        if not (m_png or m_pdf):
+            return False
+        run_id = int((m_png or m_pdf).group(1))
+        pages = issue_pages(config, run_id)
+        if m_png:
+            png = issue_dir(config, run_id) / f"page_{int(m_png.group(2))}.png"
+            if png not in pages:
+                self._send_html("not found", status=404)
+                return True
+            self._send_file(png.read_bytes(), "image/png")
+            return True
+
+        kind = m_pdf.group(2)
+        run = next((r for r in list_runs(conn) if r.run_id == run_id), None)
+        if run is None or not pages or (kind == "a3" and len(pages) % 2):
+            self._send_html("not found", status=404)
+            return True
+        pdf = issue_dir(config, run_id) / f"{kind}.pdf"
+        try:
+            with _pdf_lock:
+                if not pdf.exists():
+                    build_pdf(pages, pdf, sheets=(kind == "a3"))
+        except Exception as exc:  # noqa: BLE001 — причину показываем, сервер не роняем
+            logger.exception("не удалось собрать PDF номера #%d", run_id)
+            self._send_html(render_error_page(f"Не удалось собрать PDF: {exc}"), status=500)
+            return True
+        date = (run.period_end or run.started_at).strftime("%Y-%m-%d")
+        self._send_file(pdf.read_bytes(), "application/pdf", f"tg-newspaper-{date}-{kind}.pdf")
+        return True
+
+    def _ready_for_llm(self, config) -> bool:
+        """Общая проверка перед тем, что ходит в Gemini: онбординг пройден и
+        ключ задан. Иначе сама отвечает редиректом/страницей ошибки."""
+        # Без онбординга прогон не стартует (Этап 6): профиль нужен персональной
+        # оценке; "Пропустить" на странице онбординга снимает блокировку.
+        if not load_profile(connect(config.db_path)).onboarded:
+            self._redirect("/onboarding")
+            return False
+        if not config.gemini_api_key:
+            self._send_html(
+                render_error_page(
+                    "GEMINI_API_KEY не задан в .env — без него нельзя прогнать "
+                    "пайплайн (LLM-классификация и дедупликация)."
+                ),
+                status=400,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _try_assemble(config, run_id: int) -> None:
+        """Собирает номер; сбой (Gemini/Chromium) не пробрасывает, а кладёт
+        в _render_errors — отбор уже сохранён, страница прогона покажет причину."""
+        conn = connect(config.db_path)
+        try:
+            run = next(r for r in list_runs(conn) if r.run_id == run_id)
+            assemble_issue(config, conn, run)
+            _render_errors.pop(run_id, None)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("сборка номера прогона #%d не удалась", run_id)
+            _render_errors[run_id] = f"{exc}\n\n{traceback.format_exc()}"
 
     def _read_form(self) -> dict[str, str]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -353,6 +448,11 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                 self._send_html(render_survey_page(survey, views))
             return
 
+        if self.path.startswith("/issue/"):
+            if not self._serve_issue_file(conn, config, self.path.partition("?")[0]):
+                self._send_html("not found", status=404)
+            return
+
         if self.path.startswith("/run_") and self.path.endswith(".html"):
             try:
                 run_id = int(self.path[len("/run_") : -len(".html")])
@@ -367,7 +467,9 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             outcomes = load_run(conn, run_id)
             self._send_html(
                 render_run_page(
-                    outcomes, run_id, run.started_at, runs, run.period_start, run.period_end
+                    outcomes, run_id, run.started_at, runs, run.period_start, run.period_end,
+                    issue_page_count=len(issue_pages(config, run_id)),
+                    render_error=_render_errors.pop(run_id, None),
                 )
             )
             return
@@ -413,24 +515,27 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             self._redirect(f"/survey/{survey.survey_id}")
             return
 
+        m_render = _RENDER_RE.fullmatch(self.path)
+        if m_render:
+            # Ручная (пере)сборка номера: для старых прогонов и после сбоя.
+            run_id = int(m_render.group(1))
+            config = load_config()
+            if not any(r.run_id == run_id for r in list_runs(connect(config.db_path))):
+                self._send_html("прогон не найден", status=404)
+                return
+            if not self._ready_for_llm(config):
+                return
+            logger.info("сборка номера прогона #%d по кнопке", run_id)
+            self._try_assemble(config, run_id)
+            self._redirect(run_page_filename(run_id))
+            return
+
         if self.path != "/run":
             self._send_html("not found", status=404)
             return
 
         config = load_config()
-        # Без онбординга прогон не стартует (Этап 6): профиль нужен персональной
-        # оценке; "Пропустить" на странице онбординга снимает блокировку.
-        if not load_profile(connect(config.db_path)).onboarded:
-            self._redirect("/onboarding")
-            return
-        if not config.gemini_api_key:
-            self._send_html(
-                render_error_page(
-                    "GEMINI_API_KEY не задан в .env — без него нельзя прогнать "
-                    "пайплайн (LLM-классификация и дедупликация)."
-                ),
-                status=400,
-            )
+        if not self._ready_for_llm(config):
             return
 
         logger.info("получена команда 'Собрать газету' — запускаю прогон")
@@ -446,6 +551,9 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             "прогон #%d завершён: постов=%d пошло=%d",
             result.run_id, len(result.outcomes), included,
         )
+        # Номер вёрстаем сразу: отбор уже в БД, поэтому сбой вёрстки не
+        # теряет прогон — страница прогона покажет ошибку и кнопку "Свёрстать".
+        self._try_assemble(config, result.run_id)
         self._redirect(run_page_filename(result.run_id))
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 — сигнатура базового класса

@@ -1,7 +1,7 @@
 """CLI-эквивалент кнопки "Собрать газету" из локальной консоли
 (scripts/console.py) — на случай, когда нужен headless-запуск из терминала,
-без браузера. Оба пути вызывают один и тот же tg_newspaper.pipeline —
-раздельной логики нет.
+без браузера. Отбор постов и вёрстка номера — те же функции
+tg_newspaper.pipeline, что и у кнопки: раздельной логики нет.
 
 Запускается вручную, по требованию — не по расписанию (см. AGENTS.md:
 проект больше не собирает газету автоматически раз в сутки, только по
@@ -11,7 +11,8 @@
 import logging
 
 from .config import load_config
-from .pipeline import run_pipeline_for_last_24h
+from .pipeline import assemble_issue, issue_dir, run_pipeline_for_last_24h
+from .storage import connect, list_runs
 
 logger = logging.getLogger(__name__)
 
@@ -45,3 +46,21 @@ def main() -> None:
 
     print(f"\nСохранено как прогон #{result.run_id}.")
     print("Смотреть: uv run python scripts/console.py")
+
+    # Отбор уже сохранён в БД; сбой вёрстки (Gemini/Chromium) его не отменяет —
+    # объясняем, как свёрстать номер заново, вместо голого traceback.
+    try:
+        conn = connect(config.db_path)
+        run = next(r for r in list_runs(conn) if r.run_id == result.run_id)
+        issue = assemble_issue(config, conn, run)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("сборка номера не удалась")
+        print(
+            f"\nНомер свёрстать не удалось: {exc}\n"
+            f"Отбор сохранён; повторить вёрстку: uv run python scripts/render_preview.py {result.run_id}"
+        )
+        return
+    if issue is None:
+        print("\nВ номер нечего ставить — ни одной новости не прошло отбор.")
+        return
+    print(f"\nНомер: {len(issue.pages)} полос → {issue_dir(config, result.run_id)}")

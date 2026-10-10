@@ -31,6 +31,7 @@ from .personalization import (
 )
 from .storage import (
     Post,
+    Run,
     connect,
     create_run,
     load_outcomes,
@@ -580,8 +581,58 @@ def build_newspaper(
 
 def save_newspaper_issue(conn: sqlite3.Connection, run_id: int, result: NewspaperResult) -> None:
     """Фиксирует состав только что собранного номера прогона run_id как
-    "напечатанное" — историю для дедупа следующих прогонов. Вызывается после
-    каждой сборки номера (сейчас scripts/render_preview.py, позже — печать,
-    Этап 4); повторная сборка по тому же run_id заменяет состав, а не
-    дописывает (см. storage.save_issue)."""
+    "напечатанное" — историю для дедупа следующих прогонов. Вызывается из
+    assemble_issue после каждой сборки номера (кнопка, CLI, render_preview.py;
+    позже — печать, Этап 4); повторная сборка по тому же run_id заменяет
+    состав, а не дописывает (см. storage.save_issue)."""
     save_issue(conn, run_id, result.published)
+
+
+ISSUE_BASENAME = "page"
+
+
+def issue_dir(config: Config, run_id: int) -> Path:
+    """Каталог файлов собранного номера прогона: полосы page_N.png и кеш PDF
+    (a4.pdf/a3.pdf). Лежит рядом с БД, а не в репозитории — это данные."""
+    return config.db_path.parent / "issues" / f"run_{run_id}"
+
+
+def issue_pages(config: Config, run_id: int) -> list[Path]:
+    """Полосы номера по порядку. Сортировка числовая: по строке page_10
+    встало бы раньше page_2."""
+    found: list[tuple[int, Path]] = []
+    for path in issue_dir(config, run_id).glob(f"{ISSUE_BASENAME}_*.png"):
+        suffix = path.stem[len(ISSUE_BASENAME) + 1:]
+        if suffix.isdigit():
+            found.append((int(suffix), path))
+    return [p for _, p in sorted(found)]
+
+
+def assemble_issue(
+    config: Config,
+    conn: sqlite3.Connection,
+    run: Run,
+    max_pages: int = NEWSPAPER_MAX_PAGES,
+) -> NewspaperResult | None:
+    """Собирает номер по сохранённому прогону и фиксирует его состав для
+    дедупа. Единая точка для кнопки консоли, CLI и render_preview.py.
+    None — в прогоне нет ни одной новости для газеты."""
+    outcomes = load_run(conn, run.run_id)
+    if not any(o.included for o in outcomes):
+        return None
+
+    out_dir = issue_dir(config, run.run_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Пересборка может дать меньше полос, чем прошлая, а PDF — склейка старых
+    # картинок: без очистки в каталоге остались бы чужие полосы и устаревший
+    # кеш, который консоль отдала бы как свежий номер.
+    for stale in [*out_dir.glob(f"{ISSUE_BASENAME}_*.png"), *out_dir.glob("*.pdf")]:
+        stale.unlink()
+
+    result = build_newspaper(
+        config, outcomes, out_dir, basename=ISSUE_BASENAME,
+        run_date=run.period_end or run.started_at, max_pages=max_pages,
+    )
+    # Состав номера — "уже напечатанное" для дедупа следующих прогонов.
+    save_newspaper_issue(conn, run.run_id, result)
+    return result

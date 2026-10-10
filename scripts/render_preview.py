@@ -1,14 +1,16 @@
 """
-Ручная сверка вёрстки на реальных данных (Этап 3): собирает печатный номер
-фиксированного объёма по уже сохранённому прогону, ничего заново не собирая
-через Telethon. В отличие от остального просмотра прогонов, МОЖЕТ обратиться
-к Gemini — если новости не помещаются в отведённый объём, часть из них
-сокращается нейронкой (см. pipeline.build_newspaper); это обычный, не
-дополнительный вызов LLM для этого шага.
+Ручная (пере)сборка номера по уже сохранённому прогону, ничего заново не
+собирая через Telethon: то же, что делает кнопка "Свёрстать номер" в консоли.
+В отличие от остального просмотра прогонов, МОЖЕТ обратиться к Gemini —
+если новости не помещаются в отведённый объём, часть из них сокращается
+нейронкой (см. pipeline.build_newspaper); это обычный, не дополнительный
+вызов LLM для этого шага.
 
 Запуск: uv run python scripts/render_preview.py [run_id] [--pages N]
 Без run_id — берёт последний сохранённый прогон.
-Результат — data/preview_run_<id>_1.png, _2.png, ... (не больше --pages штук).
+Результат — data/issues/run_<id>/page_1.png, page_2.png, ... (не больше
+--pages полос мозаики плюс обложка); старые полосы и PDF этого прогона
+перед сборкой удаляются.
 Побочный эффект: состав собранного номера записывается в БД (issue_posts) как
 "уже напечатанное" — по нему дедуплицируются следующие прогоны. Повторный
 запуск по тому же прогону заменяет состав.
@@ -19,7 +21,7 @@ from __future__ import annotations
 import argparse
 
 from tg_newspaper.config import load_config
-from tg_newspaper.pipeline import NEWSPAPER_MAX_PAGES, build_newspaper, load_run, save_newspaper_issue
+from tg_newspaper.pipeline import NEWSPAPER_MAX_PAGES, assemble_issue, load_run
 from tg_newspaper.storage import connect, list_runs
 
 
@@ -42,22 +44,10 @@ def main() -> None:
     else:
         run = runs[0]
 
-    outcomes = load_run(conn, run.run_id)
-    included_count = sum(1 for o in outcomes if o.included)
-    if not included_count:
+    included_count = sum(1 for o in load_run(conn, run.run_id) if o.included)
+    result = assemble_issue(config, conn, run, max_pages=args.pages)
+    if result is None:
         raise SystemExit(f"прогон #{run.run_id} не дал ни одной новости для газеты")
-
-    result = build_newspaper(
-        config,
-        outcomes,
-        config.db_path.parent,
-        basename=f"preview_run_{run.run_id}",
-        run_date=run.period_end or run.started_at,
-        max_pages=args.pages,
-    )
-    # Состав номера — это "уже напечатанное" для дедупа следующих прогонов;
-    # повторный запуск по тому же прогону заменяет состав, а не дописывает.
-    save_newspaper_issue(conn, run.run_id, result)
     pages_list = "\n".join(f"  {p}" for p in result.pages)
     print(
         f"Прогон #{run.run_id}: {included_count} новостей → {len(result.pages)} полос(ы) "

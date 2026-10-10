@@ -41,12 +41,21 @@ STYLE = """
   .nav a, .nav span { border: 1px solid #d0d0d5; border-radius: 6px; padding: 6px 12px;
                        font-size: 13px; text-decoration: none; color: #333; background: #fff; }
   .nav .current { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
-  .placeholder {
-    background: repeating-linear-gradient(45deg, #eee, #eee 10px, #e4e4e4 10px, #e4e4e4 20px);
-    border: 1px dashed #bbb; border-radius: 8px; height: 140px;
-    display: flex; align-items: center; justify-content: center;
-    color: #777; font-size: 14px; margin-bottom: 20px; text-align: center; padding: 0 20px;
-  }
+  .issue-box { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
+               padding: 14px 18px; margin-bottom: 20px; }
+  .issue-box h2 { font-size: 15px; margin: 0 0 10px; }
+  .issue-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+                   margin-bottom: 12px; }
+  .issue-actions form { margin: 0; }
+  a.btn, button.btn { display: inline-block; border: 1px solid #1a1a1a; border-radius: 6px;
+                      background: #1a1a1a; color: #fff; padding: 8px 14px; font-size: 13px;
+                      font-weight: 600; text-decoration: none; cursor: pointer; }
+  button.btn.secondary { background: #fff; color: #1a1a1a; border-color: #d0d0d5; }
+  button.btn:disabled { opacity: .6; cursor: wait; }
+  .issue-pages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .issue-pages img { width: 100%; height: auto; display: block; border: 1px solid #ccc;
+                     background: #fff; }
+  .issue-empty { color: #666; font-size: 14px; margin: 0 0 10px; }
   .summary { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
   .stat { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
           padding: 10px 16px; }
@@ -202,6 +211,63 @@ def _period_html(period_start: datetime | None, period_end: datetime | None) -> 
     )
 
 
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """Русское склонение по числу: 1 полоса, 2 полосы, 5 полос."""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
+def _render_form_html(run_id: int, label: str, secondary: bool = False) -> str:
+    # Сборка долгая (вёрстка + вызовы Gemini) — блокируем кнопку от повторных
+    # кликов, как у основной.
+    cls = "btn secondary" if secondary else "btn"
+    return (
+        f'<form method="post" action="/run_{run_id}/render">'
+        f'<button class="{cls}" type="submit" onclick="this.disabled=true; '
+        f"this.innerText='Верстаю номер… это может занять пару минут';\">"
+        f"{label}</button></form>"
+    )
+
+
+def _issue_html(run_id: int, included: int, page_count: int, render_error: str | None) -> str:
+    """Блок "Номер" на странице прогона: скачивание PDF, превью полос и
+    пересборка. Список страниц приходит снаружи — файловую систему этот
+    модуль не трогает."""
+    error_html = (
+        f'<div class="error-box">Не удалось свёрстать номер (отбор сохранён):\n'
+        f"{html.escape(render_error)}</div>"
+        if render_error
+        else ""
+    )
+    if page_count:
+        sheets = page_count // 2
+        previews = "\n".join(
+            f'<a href="/issue/{run_id}/page_{n}.png" target="_blank">'
+            f'<img src="/issue/{run_id}/page_{n}.png" loading="lazy" alt="Полоса {n}"></a>'
+            for n in range(1, page_count + 1)
+        )
+        body = f"""
+    <div class="issue-actions">
+      <a class="btn" href="/issue/{run_id}/a4.pdf">Скачать PDF — {page_count} {_plural(page_count, "полоса", "полосы", "полос")} A4</a>
+      <a class="btn" href="/issue/{run_id}/a3.pdf">Скачать PDF — {sheets} {_plural(sheets, "лист", "листа", "листов")} A3</a>
+      {_render_form_html(run_id, "Пересобрать номер", secondary=True)}
+    </div>
+    <div class="issue-pages">{previews}</div>"""
+    elif included:
+        body = f"""
+    <p class="issue-empty">Номер ещё не свёрстан.</p>
+    <div class="issue-actions">{_render_form_html(run_id, "Свёрстать номер")}</div>"""
+    else:
+        body = '<p class="issue-empty">В номер нечего ставить.</p>'
+    return f'''<div class="issue-box">
+    <h2>Номер</h2>
+    {error_html}{body}
+  </div>'''
+
+
 def render_run_page(
     outcomes: list[PostOutcome],
     run_id: int,
@@ -209,6 +275,8 @@ def render_run_page(
     all_runs: list[Run],
     period_start: datetime | None = None,
     period_end: datetime | None = None,
+    issue_page_count: int = 0,
+    render_error: str | None = None,
 ) -> str:
     outcomes_sorted = sorted(outcomes, key=lambda o: o.post.posted_at)
     total = len(outcomes_sorted)
@@ -230,10 +298,7 @@ def render_run_page(
 
   {_nav_html(all_runs, run_id)}
 
-  <div class="placeholder">
-    Здесь будет картинка напечатанной газетной полосы —<br>
-    рендер (Этап 3) и печать (Этап 4) ещё не реализованы.
-  </div>
+  {_issue_html(run_id, included, issue_page_count, render_error)}
 
   <div class="summary">
     <div class="stat"><span class="n">{total}</span><span class="label">всего постов</span></div>
@@ -277,8 +342,9 @@ _RUN_BUTTON_HTML = """
       </button>
     </form>
     <p class="run-note">
-      Заберёт посты за последние 24 часа, отфильтрует и отсеет дубли — займёт время
-      (Telethon + вызовы LLM), страница обновится по готовности.
+      Заберёт посты за последние 24 часа, отфильтрует, отсеет дубли и сразу свёрстает
+      номер (PDF для печати) — займёт время (Telethon + вызовы LLM + вёрстка),
+      страница обновится по готовности.
     </p>
   </div>
 """
