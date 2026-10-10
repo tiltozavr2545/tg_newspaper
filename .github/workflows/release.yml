@@ -10,7 +10,7 @@ on:
     inputs:
       version:
         description: "Версия (без v)"
-        default: "0.0.0-dev"
+        default: "0.0.1.dev0"
 
 env:
   # Версия = тег без "v" либо input ручного запуска.
@@ -26,6 +26,11 @@ jobs:
       - name: Версия
         run: |
           V="${VERSION#v}"
+          # Версия попадает в pyproject.toml, который uv разбирает по PEP 440: невалидную отсекаем здесь.
+          if ! echo "$V" | grep -Eq '^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$'; then
+            echo "::error::версия $V не по PEP 440, примеры: 0.2.0, 0.2.0rc1, 0.2.1.dev3"
+            exit 1
+          fi
           echo "V=$V" >> "$GITHUB_ENV"
           # Подставляем версию в pyproject.toml, чтобы консоль показывала её внизу
           # главной; в репозитории остаётся 0.1.0. uv.lock не трогаем: --frozen
@@ -56,13 +61,13 @@ jobs:
           "$TMP/TG Newspaper.app/Contents/MacOS/TG Newspaper" || { for f in "$TG_NEWSPAPER_HOME"/data/*.log; do echo "--- $f"; cat "$f"; done; exit 1; }
 
           # Свежий HOME без настроек: главная редиректит на мастер (303) - это успех.
-          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18420/)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18420/)"
           [ "$code" = "303" ] || { echo "ожидали 303 на /, получили $code"; exit 1; }
-          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18420/setup)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18420/setup)"
           [ "$code" = "200" ] || { echo "ожидали 200 на /setup, получили $code"; exit 1; }
 
           PID="$(cat "$TG_NEWSPAPER_HOME/data/console.pid")"
-          curl -s -X POST -o /dev/null http://localhost:18420/shutdown
+          curl -s -X POST -o /dev/null http://127.0.0.1:18420/shutdown
           for _ in $(seq 1 20); do
             kill -0 "$PID" 2>/dev/null || { echo "консоль остановлена"; exit 0; }
             sleep 0.5
@@ -87,6 +92,10 @@ jobs:
       - name: Версия и staging
         run: |
           $v = $env:VERSION -replace '^v', ''
+          # Версия попадает в pyproject.toml, который uv разбирает по PEP 440: невалидную отсекаем здесь.
+          if ($v -notmatch '^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$') {
+            throw "версия $v не по PEP 440, примеры: 0.2.0, 0.2.0rc1, 0.2.1.dev3"
+          }
           "V=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # Только нужные для запуска файлы из git: секреты и мусор не попадут.
           # -o вместо конвейера: pwsh портит бинарный вывод при перенаправлении.
@@ -146,11 +155,11 @@ jobs:
           }
 
           # Свежий HOME без настроек: главная редиректит на мастер, итог - 200 на /setup.
-          $r = Invoke-WebRequest -Uri 'http://localhost:18420/setup' -UseBasicParsing
+          $r = Invoke-WebRequest -Uri 'http://127.0.0.1:18420/setup' -UseBasicParsing
           if ($r.StatusCode -ne 200) { throw "ожидали 200 на /setup, получили $($r.StatusCode)" }
 
           $procId = [int](Get-Content "$env:TG_NEWSPAPER_HOME\data\console.pid")
-          Invoke-WebRequest -Uri 'http://localhost:18420/shutdown' -Method Post -UseBasicParsing | Out-Null
+          Invoke-WebRequest -Uri 'http://127.0.0.1:18420/shutdown' -Method Post -UseBasicParsing | Out-Null
           for ($i = 0; $i -lt 20; $i++) {
             if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { Write-Host 'консоль остановлена'; exit 0 }
             Start-Sleep -Milliseconds 500

@@ -19,11 +19,14 @@
   // Шаблон: __PORT__ подставляет лаунчер (launch.sh / launch.ps1). Консоль на
   // другом origin, поэтому no-cors: ответ непрозрачный, но промис выполняется
   // (успех = сервер поднялся), а при отказе соединения — бросает ошибку.
+  // Проверка идёт на 127.0.0.1 (localhost на Windows сначала резолвится в IPv6, а
+  // консоль слушает IPv4), переход в браузере — на localhost, как и раньше.
+  var probe = "http://127.0.0.1:__PORT__/";
   var target = "http://localhost:__PORT__/";
   var tries = 0;
   function check() {
     tries++;
-    fetch(target, {mode: "no-cors", cache: "no-store"})
+    fetch(probe, {mode: "no-cors", cache: "no-store"})
       .then(function () { location.href = target; })
       .catch(function () {
         document.getElementById("status").textContent = "Прошло " + (tries * 2) + " с…";

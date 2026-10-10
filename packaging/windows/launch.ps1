@@ -21,6 +21,11 @@ Add-Type -AssemblyName System.Windows.Forms
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = if ($env:TG_NEWSPAPER_PORT) { $env:TG_NEWSPAPER_PORT } else { '8420' }
 $Url = "http://localhost:$Port/"
+# Проверки доступности идут на 127.0.0.1, а не на localhost: на Windows localhost сначала
+# резолвится в ::1 (IPv6), а консоль слушает только IPv4. Запрос к закрытому IPv6-порту
+# ретраится около 2 с и не укладывается в -TimeoutSec, поэтому порт "не виден".
+# В браузер по-прежнему открываем $Url (localhost).
+$ProbeUrl = "http://127.0.0.1:$Port/"
 $HomeDir = if ($env:TG_NEWSPAPER_HOME) { $env:TG_NEWSPAPER_HOME } else { Join-Path $env:LOCALAPPDATA 'TG Newspaper' }
 $NoOpen = [bool]$env:TG_NEWSPAPER_NO_OPEN
 
@@ -50,7 +55,7 @@ function Get-Tail([string]$Path) {
 
 function Test-Up {
     try {
-        Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 0 -ErrorAction Stop | Out-Null
+        Invoke-WebRequest -Uri $ProbeUrl -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 0 -ErrorAction Stop | Out-Null
         return $true
     } catch {
         # 303 на /setup на свежей установке PowerShell считает ошибкой, но это
@@ -111,12 +116,12 @@ try {
         # Только для проверки ветки установки uv.
         if ($env:TG_NEWSPAPER_FORCE_UV_INSTALL) { $Uv = $null }
         if (-not $Uv) {
-            Add-Content -Path $SetupLog -Value '== установка uv =='
+            Add-Content -Path $SetupLog -Value '== установка uv ==' -Encoding utf8
             # Ставим uv в свой каталог, не трогая PATH пользователя.
             $env:UV_INSTALL_DIR = Join-Path $HomeDir 'uv'
             $env:UV_NO_MODIFY_PATH = '1'
             try {
-                Invoke-RestMethod https://astral.sh/uv/install.ps1 -ErrorAction Stop | Invoke-Expression *>&1 | Out-File -FilePath $SetupLog -Append -Encoding utf8
+                Invoke-RestMethod https://astral.sh/uv/install.ps1 -ErrorAction Stop | Invoke-Expression *>&1 | ForEach-Object { "$_" } | Out-File -FilePath $SetupLog -Append -Encoding utf8
             } catch {
                 throw "Не удалось установить uv (менеджер Python). Проверьте интернет и запустите TG Newspaper снова.`n`n$($_.Exception.Message)"
             }
@@ -127,15 +132,18 @@ try {
         Set-Location $Root
         # --no-editable: путь к программе может меняться при обновлении; --reinstall-package:
         # после обновления в venv должен оказаться новый код при той же версии пакета.
-        Add-Content -Path $SetupLog -Value "== uv sync ($Uv) =="
-        & $Uv sync --frozen --no-editable --reinstall-package tg-newspaper --quiet *>>$SetupLog
-        if ($LASTEXITCODE -ne 0) {
+        Add-Content -Path $SetupLog -Value "== uv sync ($Uv) ==" -Encoding utf8
+        # Вывод в UTF-8 через ForEach-Object: строки stderr становятся текстом, а не ErrorRecord с "At line...".
+        & $Uv sync --frozen --no-editable --reinstall-package tg-newspaper --quiet 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $SetupLog -Append -Encoding utf8
+        $uvCode = $LASTEXITCODE
+        if ($uvCode -ne 0) {
             throw "Не удалось установить зависимости (uv sync):`n`n$(Get-Tail $SetupLog)"
         }
         # Идемпотентно: при уже установленном Chromium возвращается сразу.
-        Add-Content -Path $SetupLog -Value '== playwright install chromium =='
-        & $Py -m playwright install chromium *>>$SetupLog
-        if ($LASTEXITCODE -ne 0) {
+        Add-Content -Path $SetupLog -Value '== playwright install chromium ==' -Encoding utf8
+        & $Py -m playwright install chromium 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $SetupLog -Append -Encoding utf8
+        $pwCode = $LASTEXITCODE
+        if ($pwCode -ne 0) {
             throw "Не удалось установить Chromium для вёрстки (playwright install):`n`n$(Get-Tail $SetupLog)"
         }
         if ($BuildId) { Set-Content -Path $Stamp -Value $BuildId -Encoding ascii }
@@ -151,8 +159,9 @@ try {
         -RedirectStandardOutput $Log -RedirectStandardError $ErrLog
     Set-Content -Path $PidFile -Value $proc.Id
 
-    # Ждём готовности порта до 30 с.
-    for ($i = 0; $i -lt 60; $i++) {
+    # Ждём готовности порта до 90 с (холодный первый старт на Windows: Defender сканирует
+    # свежие .pyc/.dll).
+    for ($i = 0; $i -lt 180; $i++) {
         if (Test-Up) {
             # Страница ожидания сама переходит на консоль - вторая вкладка не нужна.
             if (-not $PreparingOpened) { Open-Url $Url }
@@ -161,7 +170,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     Remove-Item -Force -ErrorAction SilentlyContinue $PidFile
-    throw "Консоль не поднялась за 30 секунд. Последние строки лога ($ErrLog):`n`n$(Get-Tail $ErrLog)"
+    throw "Консоль не поднялась за 90 секунд. Последние строки лога ($ErrLog):`n`n$(Get-Tail $ErrLog)"
 } catch {
     Show-Error $_.Exception.Message
     exit 1

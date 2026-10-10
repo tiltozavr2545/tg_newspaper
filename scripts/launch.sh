@@ -29,6 +29,9 @@ export PYTHONUTF8=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${TG_NEWSPAPER_PORT:-8420}"
 URL="http://localhost:${PORT}/"
+# Проверки доступности — на 127.0.0.1: на Windows/некоторых системах localhost сначала
+# резолвится в IPv6 (::1), а консоль слушает только IPv4. В браузер открываем $URL.
+PROBE_URL="http://127.0.0.1:${PORT}/"
 
 RELEASE=""
 HOME_DIR=""
@@ -82,7 +85,7 @@ open_url() {
 }
 
 is_up() {
-    curl -s -o /dev/null "$URL"
+    curl -s -o /dev/null "$PROBE_URL"
 }
 
 # Повторный клик по иконке: консоль уже работает — просто открываем вкладку.
@@ -215,8 +218,8 @@ $(tail -n 15 "$SETUP_LOG")"
     echo $! >"$PID_FILE"
 fi
 
-# Ждём готовности порта до ~30 с.
-for _ in $(seq 1 60); do
+# Ждём готовности порта до ~90 с (холодный старт на Windows-подобных системах и Defender-сканах).
+for _ in $(seq 1 180); do
     if is_up; then
         # Страница ожидания сама переходит на консоль — вторая вкладка не нужна.
         if [ -z "$PREPARING_OPENED" ]; then
@@ -227,7 +230,7 @@ for _ in $(seq 1 60); do
     sleep 0.5
 done
 
-dialog "Консоль не поднялась за 30 секунд. Последние строки лога ($LOG):
+dialog "Консоль не поднялась за 90 секунд. Последние строки лога ($LOG):
 
 $(tail -n 15 "$LOG")"
 rm -f "$PID_FILE"

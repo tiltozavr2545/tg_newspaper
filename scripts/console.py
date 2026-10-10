@@ -611,13 +611,13 @@ def main() -> None:
     except OSError:
         # Порт занят — почти наверняка это уже работающая консоль. pid-файл не
         # трогаем: он принадлежит запущенному экземпляру.
-        print(f"Порт {port} занят — консоль уже запущена: {url}")
+        print(f"Порт {port} занят — консоль уже запущена: {url}", flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         return
     try:
         with server:
-            print(f"Консоль: {url} (Ctrl+C — остановить сервер)")
+            print(f"Консоль: {url} (Ctrl+C — остановить сервер)", flush=True)
             # Браузер открываем только после bind: иначе он мог бы получить
             # "connection refused", не дождавшись запуска сервера.
             if not args.no_browser:
@@ -625,7 +625,7 @@ def main() -> None:
             try:
                 server.serve_forever()
             except KeyboardInterrupt:
-                print("\nОстановлено.")
+                print("\nОстановлено.", flush=True)
     finally:
         _pid_file().unlink(missing_ok=True)
 
