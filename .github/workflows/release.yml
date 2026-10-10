@@ -19,6 +19,7 @@ env:
 jobs:
   mac:
     runs-on: macos-14
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +38,7 @@ jobs:
         run: scripts/build_release_mac.sh "$V" dist
 
       - name: Смоук-тест
+        timeout-minutes: 15
         run: |
           set -eu
           MNT="$RUNNER_TEMP/mnt"
@@ -51,7 +53,7 @@ jobs:
           export TG_NEWSPAPER_PORT=18420
           # Первый запуск ставит uv-окружение и Chromium - несколько минут;
           # лаунчер возвращается, когда консоль отвечает.
-          "$TMP/TG Newspaper.app/Contents/MacOS/TG Newspaper" || { cat "$TG_NEWSPAPER_HOME"/data/*.log || true; exit 1; }
+          "$TMP/TG Newspaper.app/Contents/MacOS/TG Newspaper" || { for f in "$TG_NEWSPAPER_HOME"/data/*.log; do echo "--- $f"; cat "$f"; done; exit 1; }
 
           # Свежий HOME без настроек: главная редиректит на мастер (303) - это успех.
           code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18420/)"
@@ -75,6 +77,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 25
     defaults:
       run:
         shell: pwsh
@@ -99,6 +102,13 @@ jobs:
           $sha = $env:GITHUB_SHA.Substring(0, 7)
           [System.IO.File]::WriteAllText((Join-Path $PWD 'stage\BUILD_ID'), "$v+$sha", (New-Object System.Text.UTF8Encoding($false)))
 
+      - name: Проверка синтаксиса launch.ps1 (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $e = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\packaging\windows\launch.ps1", [ref]$null, [ref]$e)
+          if ($e) { $e; exit 1 }
+
       - name: Inno Setup
         run: |
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
@@ -114,6 +124,7 @@ jobs:
           Get-ChildItem dist
 
       - name: Смоук-тест
+        timeout-minutes: 15
         run: |
           $ErrorActionPreference = 'Stop'
           $tmp = Join-Path $env:RUNNER_TEMP 'smoke'

@@ -58,8 +58,14 @@ SETUP_LOG="$RUN_DIR/setup.log"
 # Диалог через argv, а не подстановкой в строку AppleScript: в логе бывают
 # кавычки и обратные слэши, они бы сломали скрипт.
 dialog() {
+    # В тестах/CI (NO_OPEN, CI) диалог некому закрыть - он бы завис навсегда,
+    # поэтому только stderr. Для людей диалог сам закрывается через 10 минут.
+    if [ -n "${TG_NEWSPAPER_NO_OPEN:-}" ] || [ -n "${CI:-}" ]; then
+        echo "$1" >&2
+        return 0
+    fi
     osascript -e 'on run argv' \
-        -e 'display dialog (item 1 of argv) with title "TG Newspaper" buttons {"OK"} default button "OK" with icon caution' \
+        -e 'display dialog (item 1 of argv) with title "TG Newspaper" buttons {"OK"} default button "OK" with icon caution giving up after 600' \
         -e 'end run' -- "$1" >/dev/null 2>&1 || echo "$1" >&2
 }
 
@@ -124,16 +130,20 @@ with sync_playwright() as p:
         # даже если uv удалён), сразу стартуем консоль.
         echo "подготовка не нужна" >"$SETUP_LOG"
     else
+        : >"$SETUP_LOG"
         if [ -z "${TG_NEWSPAPER_NO_OPEN:-}" ]; then
             # __PORT__ в шаблоне заменяем на порт; страница сама перейдёт в консоль.
             sed "s/__PORT__/${PORT}/g" "$ROOT/scripts/preparing.html" >"$RUN_DIR/preparing.html"
             open "$RUN_DIR/preparing.html" && PREPARING_OPENED=1
         fi
 
+        # Только для проверки ветки установки uv: делаем вид, что uv не найден.
+        [ -n "${TG_NEWSPAPER_FORCE_UV_INSTALL:-}" ] && UV=""
         if [ -z "$UV" ]; then
+            echo "== установка uv ==" >>"$SETUP_LOG"
             # Ставим uv в свой каталог, без правки профилей оболочки (NO_MODIFY_PATH).
             if ! curl -LsSf https://astral.sh/uv/install.sh \
-                | env UV_INSTALL_DIR="$HOME_DIR/uv" UV_NO_MODIFY_PATH=1 sh >"$SETUP_LOG" 2>&1; then
+                | env UV_INSTALL_DIR="$HOME_DIR/uv" UV_NO_MODIFY_PATH=1 sh >>"$SETUP_LOG" 2>&1; then
                 dialog "Не удалось установить uv (менеджер Python). Проверьте интернет и запустите TG Newspaper снова.
 
 $(tail -n 15 "$SETUP_LOG")"
@@ -146,13 +156,15 @@ $(tail -n 15 "$SETUP_LOG")"
         # --no-editable: путь к бандлу может меняться (App Translocation), editable
         # .pth указывал бы в никуда. --reinstall-package: после обновления приложения
         # в venv должен оказаться новый код при той же версии пакета.
-        if ! "$UV" sync --frozen --no-editable --reinstall-package tg-newspaper --quiet >"$SETUP_LOG" 2>&1; then
+        echo "== uv sync ($UV) ==" >>"$SETUP_LOG"
+        if ! "$UV" sync --frozen --no-editable --reinstall-package tg-newspaper --quiet >>"$SETUP_LOG" 2>&1; then
             dialog "Не удалось установить зависимости (uv sync):
 
 $(tail -n 15 "$SETUP_LOG")"
             exit 1
         fi
         # Идемпотентно: при уже установленном Chromium возвращается сразу.
+        echo "== playwright install chromium ==" >>"$SETUP_LOG"
         if ! "$PY" -m playwright install chromium >>"$SETUP_LOG" 2>&1; then
             dialog "Не удалось установить Chromium для вёрстки (playwright install):
 

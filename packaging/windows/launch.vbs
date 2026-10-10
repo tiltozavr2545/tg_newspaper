@@ -1,5 +1,6 @@
-' Запускает launch.ps1 без мелькающего окна консоли: ярлык вызывает wscript.exe,
-' а он стартует PowerShell скрытым окном (0) и не ждёт его завершения (False).
+' Starts launch.ps1 without a flashing console window: the shortcut runs
+' wscript.exe, which starts PowerShell hidden (window style 0) and does not
+' wait for it (False). ASCII only: WSH reads .vbs in the ANSI code page.
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 dir = fso.GetParentFolderName(WScript.ScriptFullName)

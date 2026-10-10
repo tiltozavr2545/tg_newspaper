@@ -1,4 +1,4 @@
-# Запуск консоли TG Newspaper на Windows (аналог scripts/launch.sh в релизном режиме).
+﻿# Запуск консоли TG Newspaper на Windows (аналог scripts/launch.sh в релизном режиме).
 # Лежит в каталоге установки рядом с исходниками проекта (pyproject.toml, src\, scripts\);
 # данные пользователя, venv и логи — в %LOCALAPPDATA%\TG Newspaper, чтобы
 # переустановка/обновление программы их не трогали.
@@ -38,6 +38,8 @@ $SetupLog = Join-Path $RunDir 'setup.log'
 New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
 function Show-Error([string]$Message) {
+    # В тестах/CI окно некому закрыть - оно бы зависло навсегда, поэтому только stderr.
+    if ($NoOpen -or $env:CI) { [Console]::Error.WriteLine($Message); return }
     [void][System.Windows.Forms.MessageBox]::Show($Message, 'TG Newspaper',
         [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
 }
@@ -104,13 +106,17 @@ if ($NeedPrepare -and -not $NoOpen) {
 
 try {
     if ($NeedPrepare) {
+        Set-Content -Path $SetupLog -Value '' -Encoding utf8
         $Uv = Find-Uv
+        # Только для проверки ветки установки uv.
+        if ($env:TG_NEWSPAPER_FORCE_UV_INSTALL) { $Uv = $null }
         if (-not $Uv) {
+            Add-Content -Path $SetupLog -Value '== установка uv =='
             # Ставим uv в свой каталог, не трогая PATH пользователя.
             $env:UV_INSTALL_DIR = Join-Path $HomeDir 'uv'
             $env:UV_NO_MODIFY_PATH = '1'
             try {
-                Invoke-RestMethod https://astral.sh/uv/install.ps1 -ErrorAction Stop | Invoke-Expression *>&1 | Out-File -FilePath $SetupLog -Encoding utf8
+                Invoke-RestMethod https://astral.sh/uv/install.ps1 -ErrorAction Stop | Invoke-Expression *>&1 | Out-File -FilePath $SetupLog -Append -Encoding utf8
             } catch {
                 throw "Не удалось установить uv (менеджер Python). Проверьте интернет и запустите TG Newspaper снова.`n`n$($_.Exception.Message)"
             }
@@ -121,11 +127,13 @@ try {
         Set-Location $Root
         # --no-editable: путь к программе может меняться при обновлении; --reinstall-package:
         # после обновления в venv должен оказаться новый код при той же версии пакета.
-        & $Uv sync --frozen --no-editable --reinstall-package tg-newspaper --quiet *>$SetupLog
+        Add-Content -Path $SetupLog -Value "== uv sync ($Uv) =="
+        & $Uv sync --frozen --no-editable --reinstall-package tg-newspaper --quiet *>>$SetupLog
         if ($LASTEXITCODE -ne 0) {
             throw "Не удалось установить зависимости (uv sync):`n`n$(Get-Tail $SetupLog)"
         }
         # Идемпотентно: при уже установленном Chromium возвращается сразу.
+        Add-Content -Path $SetupLog -Value '== playwright install chromium =='
         & $Py -m playwright install chromium *>>$SetupLog
         if ($LASTEXITCODE -ne 0) {
             throw "Не удалось установить Chromium для вёрстки (playwright install):`n`n$(Get-Tail $SetupLog)"

@@ -1,4 +1,4 @@
-; Установщик TG Newspaper для Windows (Inno Setup 6).
+﻿; Установщик TG Newspaper для Windows (Inno Setup 6).
 ; Сборка: iscc /DAppVersion=0.2.0 /DStageDir=<каталог с исходниками> packaging\windows\tg-newspaper.iss
 ; Результат: Output\TG-Newspaper-<версия>-windows-setup.exe (каталог можно сменить /O<каталог>).
 ;
