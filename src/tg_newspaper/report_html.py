@@ -433,6 +433,10 @@ def render_index_page(
   {error_html}
   {_RUN_BUTTON_HTML}
   {list_html}
+  <form method="post" action="/shutdown" style="margin-top:3em;text-align:right"
+        onsubmit="return confirm('Выключить консоль? Запустить снова можно иконкой TG Newspaper.')">
+    <button type="submit" style="background:none;border:none;color:#888;font-size:12px;cursor:pointer;text-decoration:underline">Выключить консоль</button>
+  </form>
 </body>
 </html>"""
 

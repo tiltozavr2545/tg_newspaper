@@ -18,6 +18,11 @@
 пути .env, channels.yaml и каталога файла сессии — TG_NEWSPAPER_ENV,
 TG_NEWSPAPER_CHANNELS, TG_NEWSPAPER_SESSION_DIR (см. config.py).
 
+Обычно консоль запускает приложение "TG Newspaper" (scripts/make_app.sh →
+scripts/launch.sh): сервер живёт в фоне без окна, останавливается кнопкой
+"Выключить консоль" на главной (POST /shutdown). Каталог лога и pid-файла —
+TG_NEWSPAPER_RUN_DIR (по умолчанию data/).
+
 Первый запуск: пока проект не настроен (нет Telegram API, входа в аккаунт,
 ключа Gemini или списка каналов), все страницы ведут на мастер настройки
 /setup — он же доступен позже по ссылке "Настройки" на главной.
@@ -28,10 +33,12 @@ from __future__ import annotations
 import argparse
 import http.server
 import logging
+import os
 import re
 import threading
 import traceback
 import webbrowser
+from pathlib import Path
 from urllib.parse import parse_qs
 
 from tg_newspaper import setup_wizard as wizard
@@ -81,6 +88,14 @@ from tg_newspaper.storage import (
 )
 
 PORT = 8420
+
+_SHUTDOWN_PAGE = (
+    '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+    "<title>TG Newspaper</title></head>"
+    '<body style="font-family:sans-serif;max-width:32em;margin:4em auto">'
+    "<h1>Консоль остановлена</h1>"
+    "<p>Запустить снова — иконкой TG Newspaper.</p></body></html>"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +492,14 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self._send_html("not found", status=404)
 
     def do_POST(self) -> None:  # noqa: N802
+        # Выключение обрабатываем раньше мастера настройки: консоль в фоне без
+        # окна, и остановить её должно быть можно на любом этапе.
+        if self.path == "/shutdown":
+            self._send_html(_SHUTDOWN_PAGE)
+            # server.shutdown() ждёт выхода из serve_forever; вызвав его из
+            # потока обработчика, получили бы deadlock — поэтому отдельный поток.
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if self.path.startswith("/setup/"):
             self._handle_setup_post()
             return
@@ -560,6 +583,12 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), format % args)
 
 
+def _pid_file() -> Path:
+    run_dir = os.environ.get("TG_NEWSPAPER_RUN_DIR")
+    base = Path(run_dir) if run_dir else Path(__file__).resolve().parent.parent / "data"
+    return base / "console.pid"
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -570,18 +599,32 @@ def main() -> None:
     port = args.port
 
     url = f"http://localhost:{port}/"
-    print(f"Открываю {url} (Ctrl+C — остановить сервер)")
-    if not args.no_browser:
-        webbrowser.open(url)
     # ThreadingHTTPServer, не HTTPServer: однопоточный сервер обслуживает
     # запросы по одному — зависшее или незакрытое соединение (например,
     # keep-alive от браузера) блокирует вообще все следующие запросы,
     # проверено на практике.
-    with http.server.ThreadingHTTPServer(("localhost", port), ConsoleHandler) as server:
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("\nОстановлено.")
+    try:
+        server = http.server.ThreadingHTTPServer(("localhost", port), ConsoleHandler)
+    except OSError:
+        # Порт занят — почти наверняка это уже работающая консоль. pid-файл не
+        # трогаем: он принадлежит запущенному экземпляру.
+        print(f"Порт {port} занят — консоль уже запущена: {url}")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
+    try:
+        with server:
+            print(f"Консоль: {url} (Ctrl+C — остановить сервер)")
+            # Браузер открываем только после bind: иначе он мог бы получить
+            # "connection refused", не дождавшись запуска сервера.
+            if not args.no_browser:
+                webbrowser.open(url)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                print("\nОстановлено.")
+    finally:
+        _pid_file().unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
