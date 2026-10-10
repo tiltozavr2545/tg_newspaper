@@ -16,7 +16,8 @@
 Флаги: --no-browser (не открывать браузер), --port N. Путь к БД можно
 переопределить переменной окружения TG_NEWSPAPER_DB (для проверки на копии);
 пути .env, channels.yaml и каталога файла сессии — TG_NEWSPAPER_ENV,
-TG_NEWSPAPER_CHANNELS, TG_NEWSPAPER_SESSION_DIR (см. config.py).
+TG_NEWSPAPER_CHANNELS, TG_NEWSPAPER_SESSION_DIR (см. config.py); все данные
+пользователя разом — TG_NEWSPAPER_HOME (так работает установленный релиз).
 
 Обычно консоль запускает приложение "TG Newspaper" (scripts/make_app.sh →
 scripts/launch.sh): сервер живёт в фоне без окна, останавливается кнопкой
@@ -42,7 +43,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from tg_newspaper import setup_wizard as wizard
-from tg_newspaper.config import channels_path, env_path, load_config
+from tg_newspaper.config import channels_path, env_path, home_dir, load_config
 from tg_newspaper.feedback import (
     agreement,
     create_issue_survey,
@@ -585,7 +586,9 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
 
 def _pid_file() -> Path:
     run_dir = os.environ.get("TG_NEWSPAPER_RUN_DIR")
-    base = Path(run_dir) if run_dir else Path(__file__).resolve().parent.parent / "data"
+    # Без RUN_DIR — рядом с данными пользователя (в разработке это <репозиторий>/data,
+    # в релизе — <TG_NEWSPAPER_HOME>/data), а не рядом с кодом программы.
+    base = Path(run_dir) if run_dir else home_dir() / "data"
     return base / "console.pid"
 
 

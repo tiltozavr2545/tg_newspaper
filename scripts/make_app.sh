@@ -21,51 +21,13 @@ exec "$ROOT/scripts/launch.sh"
 SCRIPT
 chmod +x "$APP/Contents/MacOS/$EXE"
 
-# Иконка: PNG 1024x1024 рисуем в Chromium из HTML (Playwright уже в зависимостях),
-# затем sips + iconutil (есть в macOS) собирают .icns. Не вышло — без иконки.
-make_icon() {
-    local uv work
-    uv="$(command -v uv || true)"
-    [ -z "$uv" ] && [ -x "$HOME/.local/bin/uv" ] && uv="$HOME/.local/bin/uv"
-    [ -z "$uv" ] && return 1
-    work="$(mktemp -d)"
-    mkdir "$work/icon.iconset"
-    (cd "$ROOT" && "$uv" run python - "$work/icon.png" <<'PY'
-import sys
-from playwright.sync_api import sync_playwright
-
-HTML = """<html><body style="margin:0;background:transparent">
-<div style="width:824px;height:824px;margin:100px;border-radius:185px;background:#f3ecd9;
- box-shadow:0 12px 30px rgba(0,0,0,.35);border:14px solid #1a1a1a;box-sizing:border-box;
- display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Georgia,'Times New Roman',serif;color:#1a1a1a">
- <div style="font-size:300px;font-weight:bold;line-height:1">TG</div>
- <div style="width:560px;height:16px;background:#1a1a1a;margin:24px 0 18px"></div>
- <div style="width:560px;height:6px;background:#1a1a1a;margin-bottom:16px"></div>
- <div style="font-size:92px;letter-spacing:6px;font-weight:bold">NEWSPAPER</div>
-</div></body></html>"""
-
-with sync_playwright() as p:
-    b = p.chromium.launch()
-    page = b.new_page(viewport={"width": 1024, "height": 1024})
-    page.set_content(HTML)
-    page.screenshot(path=sys.argv[1], omit_background=True)
-    b.close()
-PY
-    ) || return 1
-    local s
-    for s in 16 32 128 256 512; do
-        sips -z $s $s "$work/icon.png" --out "$work/icon.iconset/icon_${s}x${s}.png" >/dev/null || return 1
-        sips -z $((s * 2)) $((s * 2)) "$work/icon.png" --out "$work/icon.iconset/icon_${s}x${s}@2x.png" >/dev/null || return 1
-    done
-    iconutil -c icns "$work/icon.iconset" -o "$APP/Contents/Resources/AppIcon.icns" || return 1
-    rm -rf "$work"
-}
-
+# Иконка — готовый ассет из репозитория (рисуется один раз scripts/make_icons.py).
 ICON_KEY=""
-if make_icon; then
+if [ -f "$ROOT/packaging/icons/AppIcon.icns" ]; then
+    cp "$ROOT/packaging/icons/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
     ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
 else
-    echo "Иконку собрать не удалось — приложение создано без неё." >&2
+    echo "packaging/icons/AppIcon.icns не найден — приложение создано без иконки." >&2
 fi
 
 # LSUIElement: после запуска в Dock не висит лишняя иконка — скрипт отрабатывает

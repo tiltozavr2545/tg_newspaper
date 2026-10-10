@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 
 from .feedback import LearningStats
 from .pipeline import PostOutcome
@@ -435,10 +436,19 @@ def render_index_page(
   {list_html}
   <form method="post" action="/shutdown" style="margin-top:3em;text-align:right"
         onsubmit="return confirm('Выключить консоль? Запустить снова можно иконкой TG Newspaper.')">
+    <span style="color:#aaa;font-size:11px;margin-right:1em">TG Newspaper {_app_version()}</span>
     <button type="submit" style="background:none;border:none;color:#888;font-size:12px;cursor:pointer;text-decoration:underline">Выключить консоль</button>
   </form>
 </body>
 </html>"""
+
+
+def _app_version() -> str:
+    """Версия установленного пакета; "dev" там, где метаданных нет."""
+    try:
+        return version("tg-newspaper")
+    except PackageNotFoundError:
+        return "dev"
 
 
 def render_error_page(message: str) -> str:

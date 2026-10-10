@@ -1,0 +1,174 @@
+# Сборка релизных установщиков (macOS dmg и Windows setup.exe) и публикация релиза.
+# Выпуск: git tag v0.2.0 && git push origin v0.2.0. Ручной запуск (workflow_dispatch)
+# собирает те же файлы как артефакты, но релиз не создаёт.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия (без v)"
+        default: "0.0.0-dev"
+
+env:
+  # Версия = тег без "v" либо input ручного запуска.
+  VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия
+        run: |
+          V="${VERSION#v}"
+          echo "V=$V" >> "$GITHUB_ENV"
+          # Подставляем версию в pyproject.toml, чтобы консоль показывала её внизу
+          # главной; в репозитории остаётся 0.1.0. uv.lock не трогаем: --frozen
+          # его версию пакета не сверяет.
+          sed -i.bak "s/^version = \".*\"/version = \"$V\"/" pyproject.toml
+          rm pyproject.toml.bak
+          grep '^version' pyproject.toml
+
+      - name: Сборка dmg
+        run: scripts/build_release_mac.sh "$V" dist
+
+      - name: Смоук-тест
+        run: |
+          set -eu
+          MNT="$RUNNER_TEMP/mnt"
+          mkdir -p "$MNT"
+          hdiutil attach -nobrowse -mountpoint "$MNT" "dist/TG-Newspaper-$V-mac.dmg"
+          TMP="$(mktemp -d)"
+          cp -R "$MNT/TG Newspaper.app" "$TMP/"
+          hdiutil detach "$MNT"
+
+          export TG_NEWSPAPER_HOME="$TMP/home"
+          export TG_NEWSPAPER_NO_OPEN=1
+          export TG_NEWSPAPER_PORT=18420
+          # Первый запуск ставит uv-окружение и Chromium - несколько минут;
+          # лаунчер возвращается, когда консоль отвечает.
+          "$TMP/TG Newspaper.app/Contents/MacOS/TG Newspaper" || { cat "$TG_NEWSPAPER_HOME"/data/*.log || true; exit 1; }
+
+          # Свежий HOME без настроек: главная редиректит на мастер (303) - это успех.
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18420/)"
+          [ "$code" = "303" ] || { echo "ожидали 303 на /, получили $code"; exit 1; }
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18420/setup)"
+          [ "$code" = "200" ] || { echo "ожидали 200 на /setup, получили $code"; exit 1; }
+
+          PID="$(cat "$TG_NEWSPAPER_HOME/data/console.pid")"
+          curl -s -X POST -o /dev/null http://localhost:18420/shutdown
+          for _ in $(seq 1 20); do
+            kill -0 "$PID" 2>/dev/null || { echo "консоль остановлена"; exit 0; }
+            sleep 0.5
+          done
+          echo "процесс консоли не завершился после /shutdown"; exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-dmg
+          path: dist/TG-Newspaper-*-mac.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия и staging
+        run: |
+          $v = $env:VERSION -replace '^v', ''
+          "V=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Только нужные для запуска файлы из git: секреты и мусор не попадут.
+          # -o вместо конвейера: pwsh портит бинарный вывод при перенаправлении.
+          git archive --format=tar -o stage.tar HEAD pyproject.toml uv.lock README.md .python-version src scripts/console.py scripts/preparing.html
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          tar -xf stage.tar -C stage
+          # Версия в pyproject.toml - чтобы консоль показывала её внизу главной.
+          $p = Join-Path $PWD 'stage\pyproject.toml'
+          $t = [System.IO.File]::ReadAllText($p) -replace '(?m)^version = ".*"', "version = `"$v`""
+          [System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding($false)))
+          Select-String -Path $p -Pattern '^version'
+          # BUILD_ID: по нему launch.ps1 решает, нужна ли подготовка окружения.
+          $sha = $env:GITHUB_SHA.Substring(0, 7)
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'stage\BUILD_ID'), "$v+$sha", (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Inno Setup
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y
+          }
+
+      - name: Сборка установщика
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$env:V" "/DStageDir=$PWD\stage" "/O$PWD\dist" packaging\windows\tg-newspaper.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc завершился с кодом $LASTEXITCODE" }
+          Get-ChildItem dist
+
+      - name: Смоук-тест
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tmp = Join-Path $env:RUNNER_TEMP 'smoke'
+          $installDir = Join-Path $tmp 'app'
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          $setup = Get-Item "dist\TG-Newspaper-$env:V-windows-setup.exe"
+          Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', "/DIR=$installDir" -Wait
+          if (-not (Test-Path "$installDir\launch.ps1")) { throw 'установщик не положил launch.ps1' }
+
+          $env:TG_NEWSPAPER_HOME = Join-Path $tmp 'home'
+          $env:TG_NEWSPAPER_NO_OPEN = '1'
+          $env:TG_NEWSPAPER_PORT = '18420'
+          # Первый запуск ставит uv-окружение и Chromium - несколько минут;
+          # launch.ps1 возвращается, когда консоль отвечает.
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$installDir\launch.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Get-ChildItem "$env:TG_NEWSPAPER_HOME\data\*.log" | ForEach-Object { "--- $_"; Get-Content $_ }
+            throw "launch.ps1 завершился с кодом $LASTEXITCODE"
+          }
+
+          # Свежий HOME без настроек: главная редиректит на мастер, итог - 200 на /setup.
+          $r = Invoke-WebRequest -Uri 'http://localhost:18420/setup' -UseBasicParsing
+          if ($r.StatusCode -ne 200) { throw "ожидали 200 на /setup, получили $($r.StatusCode)" }
+
+          $procId = [int](Get-Content "$env:TG_NEWSPAPER_HOME\data\console.pid")
+          Invoke-WebRequest -Uri 'http://localhost:18420/shutdown' -Method Post -UseBasicParsing | Out-Null
+          for ($i = 0; $i -lt 20; $i++) {
+            if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { Write-Host 'консоль остановлена'; exit 0 }
+            Start-Sleep -Milliseconds 500
+          }
+          throw 'процесс консоли не завершился после /shutdown'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist/TG-Newspaper-*-windows-setup.exe
+          if-no-files-found: error
+
+  release:
+    needs: [mac, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l artifacts
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --title "TG Newspaper ${GITHUB_REF_NAME#v}" \
+            --notes-file packaging/release-notes.md

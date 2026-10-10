@@ -136,7 +136,11 @@ def update_env_file(path: Path, updates: dict[str, str]) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".env.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            os.fchmod(tmp.fileno(), 0o600)
+            # os.fchmod нет на Windows (Python 3.12); POSIX-права 0600 там всё
+            # равно не работают — доступ к профилю регулируют ACL каталога
+            # пользователя (%LOCALAPPDATA%), так что пропускаем без потерь.
+            if hasattr(os, "fchmod"):
+                os.fchmod(tmp.fileno(), 0o600)
             tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())

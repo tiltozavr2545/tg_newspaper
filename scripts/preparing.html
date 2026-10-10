@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>TG Newspaper — подготовка</title>
+<style>
+  body { font-family: Georgia, "Times New Roman", serif; max-width: 34em; margin: 5em auto; padding: 0 1em; color: #1a1a1a; background: #f3ecd9; }
+  h1 { border-bottom: 3px double #1a1a1a; padding-bottom: .3em; }
+  p { line-height: 1.5; }
+  .muted { color: #666; font-size: 14px; }
+</style>
+</head>
+<body>
+  <h1>TG Newspaper</h1>
+  <p>Готовлю TG Newspaper к первому запуску… Это займёт 2–3 минуты: скачиваются Python, библиотеки и браузер для вёрстки (нужен интернет).</p>
+  <p>Эта страница сама перейдёт в консоль, как только всё будет готово. Закрывать её не нужно.</p>
+  <p class="muted" id="status"></p>
+<script>
+  // Шаблон: __PORT__ подставляет лаунчер (launch.sh / launch.ps1). Консоль на
+  // другом origin, поэтому no-cors: ответ непрозрачный, но промис выполняется
+  // (успех = сервер поднялся), а при отказе соединения — бросает ошибку.
+  var target = "http://localhost:__PORT__/";
+  var tries = 0;
+  function check() {
+    tries++;
+    fetch(target, {mode: "no-cors", cache: "no-store"})
+      .then(function () { location.href = target; })
+      .catch(function () {
+        document.getElementById("status").textContent = "Прошло " + (tries * 2) + " с…";
+        setTimeout(check, 2000);
+      });
+  }
+  check();
+</script>
+</body>
+</html>
