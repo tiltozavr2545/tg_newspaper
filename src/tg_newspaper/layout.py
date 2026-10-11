@@ -522,8 +522,11 @@ _STYLE_TEMPLATE = """
   }}
   .screamer {{
     font-family: "Superclarendon", Georgia, "Times New Roman", serif;
-    font-weight: 900; line-height: 0.92; letter-spacing: 0.5mm;
-    text-transform: uppercase; margin: 0 0 1mm;
+    font-weight: 900; line-height: 1.12; letter-spacing: 0.5mm;
+    /* 1.12, а не плотные 0.92: при 0.92 краткая над «Й» и точки над «Ё»
+       налезали на строку выше. padding-top — чтобы диакритика первой
+       строки не срезалась overflow. */
+    text-transform: uppercase; margin: 0 0 1mm; padding-top: 0.06em;
     /* Кегль приходит инлайном из _screamer_font_mm — он считается от длины
        крика, как верстальщик подбирает кегль под строку: короткое "СУХО!"
        печатается во всю полосу, длинная "МОБИЛИЗАЦИЯ?" — помельче, но всё
@@ -568,7 +571,7 @@ _STYLE_TEMPLATE = """
   .cover-list-item {{
     border-top: 0.4mm solid #1a1a1a; padding-top: 2mm;
     font-family: "Superclarendon", Georgia, serif;
-    font-size: 8.5mm; line-height: 1.1; text-transform: uppercase;
+    font-size: 8.5mm; line-height: 1.12; text-transform: uppercase;
     hyphens: auto; overflow-wrap: break-word;
   }}
 
@@ -587,7 +590,10 @@ _STYLE_TEMPLATE = """
   .secondary-item:first-child {{ border-left: none; }}
   .secondary-item h3 {{
     font-family: "Superclarendon", Georgia, serif;
-    font-size: 13mm; line-height: 1.02; margin: 0 0 2mm;
+    font-size: 13mm; line-height: 1.14; margin: 0 0 2mm;
+    /* 1.14: при 1.02 краткая над «Й» врезалась в строку выше; padding-top —
+       чтобы диакритика первой строки не срезалась overflow у .secondary-item */
+    padding-top: 0.08em;
     text-transform: uppercase; hyphens: auto; overflow-wrap: break-word;
   }}
   .secondary-item p {{ font-size: 4.6mm; line-height: 1.25; margin: 0; }}
@@ -611,6 +617,8 @@ _STYLE_TEMPLATE = """
   .secondary-photo {{
     position: relative; overflow: hidden; background-color: #333;
     margin: 0 auto 2mm; flex: 0 1 auto;
+    /* кадр не сжимается в узкую полосу, когда текст анонса высокий */
+    min-height: 14mm;
   }}
 
   /* Нижняя полоса-анонс — инверсная (белым по чёрному), как чёрная плашка
