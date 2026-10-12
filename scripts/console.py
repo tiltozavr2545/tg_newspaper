@@ -82,6 +82,7 @@ from tg_newspaper.storage import (
     list_runs,
     list_surveys,
     load_profile,
+    load_run_videos,
     load_survey,
     load_survey_items,
     save_profile,
@@ -105,6 +106,9 @@ logger = logging.getLogger(__name__)
 # следующего GET. Одна консоль — один человек, глобальный словарь достаточен.
 _flash: dict[str, wizard.StepResult] = {}
 _channel_checks: list[tuple[str, wizard.StepResult]] = []
+_youtube_checks: list[tuple[str, wizard.StepResult]] = []
+# Введённый текст при ошибке разбора/резолва — вернуть в textarea, а не терять ввод.
+_drafts: dict[str, str] = {}
 _flash_lock = threading.Lock()
 
 # Ошибки сборки номера ({run_id: текст}) — тоже "flash": отбор к этому моменту
@@ -313,8 +317,12 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             _flash.clear()
             checks = list(_channel_checks)
             _channel_checks.clear()
+            youtube_checks = list(_youtube_checks)
+            _youtube_checks.clear()
+            drafts = dict(_drafts)
+            _drafts.clear()
         _, who = wizard.session_account() if any(s.key == wizard.STEP_LOGIN and s.done for s in steps) else (False, "")
-        channels = wizard.load_channels(channels_path())
+        cf = wizard.load_channels(channels_path())
         view = SetupView(
             steps=steps,
             highlight=highlight,
@@ -326,7 +334,9 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             gemini_key_masked=wizard.mask_secret(wizard.env_value("GEMINI_API_KEY")),
             gemini_model=wizard.env_value("GEMINI_MODEL", wizard.DEFAULT_GEMINI_MODEL) or wizard.DEFAULT_GEMINI_MODEL,
             gemini_base_url=wizard.env_value("GEMINI_BASE_URL"),
-            channels_text="\n".join(channels),
+            channels_text=drafts.get("channels", wizard.channels_to_text(cf)),
+            youtube_text=drafts.get("youtube", wizard.youtube_to_text(cf.youtube)),
+            youtube_checks=youtube_checks,
             flash=flash,
             channel_checks=checks,
         )
@@ -382,19 +392,42 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     self._flash_set(wizard.STEP_GEMINI, wizard.StepResult(True, "Сохранено."))
         elif path == "/setup/channels":
-            channels, invalid = wizard.normalize_channels(form.get("channels", ""))
+            text = form.get("channels", "")
+            parsed, invalid = wizard.parse_channels_text(text)
             if invalid:
                 self._flash_set(wizard.STEP_CHANNELS, wizard.StepResult(
                     False, "Не удалось разобрать: " + ", ".join(invalid) + ". Список не сохранён."))
-            elif not channels:
+                with _flash_lock:
+                    _drafts["channels"] = text
+            elif not parsed.channels:
                 self._flash_set(wizard.STEP_CHANNELS, wizard.StepResult(False, "Укажите хотя бы один канал."))
+                with _flash_lock:
+                    _drafts["channels"] = text
             else:
-                wizard.save_channels(channels_path(), channels)
+                # YouTube живёт в том же файле — карточки не должны затирать друг друга.
+                parsed.youtube = wizard.load_channels(channels_path()).youtube
+                wizard.save_channels(channels_path(), parsed)
+                channels = parsed.channels
                 self._flash_set(wizard.STEP_CHANNELS, wizard.StepResult(True, f"Сохранено каналов: {len(channels)}."))
                 if form.get("action") == "check":
                     results = wizard.check_channels(channels)
                     with _flash_lock:
                         _channel_checks[:] = results
+        elif path == "/setup/youtube":
+            text = form.get("youtube", "")
+            cf = wizard.load_channels(channels_path())
+            resolved, results = wizard.resolve_youtube_text(text, cf.youtube)
+            if any(not r.ok for _, r in results):
+                self._flash_set("youtube", wizard.StepResult(False, "Не все каналы распознаны. Список не сохранён."))
+                with _flash_lock:
+                    _drafts["youtube"] = text
+                    _youtube_checks[:] = results
+            else:
+                cf.youtube = resolved
+                wizard.save_channels(channels_path(), cf)
+                self._flash_set("youtube", wizard.StepResult(True, f"Сохранено YouTube-каналов: {len(resolved)}."))
+                with _flash_lock:
+                    _youtube_checks[:] = results
         else:
             self._send_html("not found", status=404)
             return
@@ -486,6 +519,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                     outcomes, run_id, run.started_at, runs, run.period_start, run.period_end,
                     issue_page_count=len(issue_pages(config, run_id)),
                     render_error=_render_errors.pop(run_id, None),
+                    videos=load_run_videos(conn, run_id),
+                    youtube_enabled=bool(config.youtube_channels),
                 )
             )
             return

@@ -37,11 +37,14 @@ from .storage import (
     load_outcomes,
     load_posts,
     load_recent_issue_posts,
+    load_run_videos,
     save_issue,
     save_outcomes,
     save_posts,
     save_profile_summary,
+    save_run_videos,
 )
+from .youtube import YoutubeVideo, fetch_new_videos
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +393,26 @@ def run_pipeline_for_last_24h(config: Config) -> RunResult:
         photo_path_by_key=photo_path_by_key,
     )
     run_id = save_run(conn, outcomes, run_started_at, since, run_started_at)
+    _collect_run_videos(config, conn, run_id, since, run_started_at)
     return RunResult(run_id, since, run_started_at, outcomes)
+
+
+def _collect_run_videos(
+    config: Config, conn: sqlite3.Connection, run_id: int, since: datetime, until: datetime
+) -> None:
+    """Новые видео YouTube-каналов за окно прогона -> youtube_videos. Блок
+    вторичен: любой сбой только логируется и прогон не роняет. Без каналов
+    сети нет вовсе."""
+    if not config.youtube_channels:
+        return
+    try:
+        videos, errors = fetch_new_videos(
+            config.youtube_channels, since, until, config.media_dir / "youtube"
+        )
+        save_run_videos(conn, run_id, videos)
+        logger.info("YouTube: видео %d, ошибок каналов %d", len(videos), len(errors))
+    except Exception:  # noqa: BLE001
+        logger.warning("YouTube: сбор видео не удался", exc_info=True)
 
 
 def save_run(
@@ -482,6 +504,7 @@ def build_newspaper(
     basename: str,
     run_date: datetime,
     max_pages: int = NEWSPAPER_MAX_PAGES,
+    videos: list[YoutubeVideo] | None = None,
 ) -> NewspaperResult:
     """Собирает печатный номер фиксированного объёма (не больше max_pages
     альбомных полос A4) из уже прошедших отбор новостей (Этапы 1-2).
@@ -494,7 +517,13 @@ def build_newspaper(
     - если оно достаточно значимо (оценка > IMPORTANCE_DROP_THRESHOLD)
       и достаточно длинное, чтобы сокращение было осмысленным — сокращается
       нейронкой (GeminiClassifier.shorten) и полоса собирается заново;
-    - иначе — выбрасывается из номера целиком.
+    - иначе — выбрасывается из номера целиком. Выбрасываются НЕ сами
+      leftover, а столько же новостей с наименьшей значимостью по всему
+      номеру: с рубриками (секциями) "не влезло" — это хвост последней
+      секции, а не самое неважное.
+
+    videos — блок "Новые видео" в конце последнего листа (layout.render_pages):
+    место под него резервируется, поэтому новости его не вытесняют.
 
     Каждая попытка — полный проход layout.render_pages с нуля (не только
     "довёрстка" последней полосы): дешевле по коду и, поскольку номер
@@ -539,6 +568,9 @@ def build_newspaper(
             photo_relevance_by_key=photo_relevance_by_key,
             photo_path_by_key=photo_path_by_key,
             teaser_provider=teaser_provider,
+            rubric_by_channel=config.rubric_by_channel,
+            rubric_order=config.rubric_order,
+            videos=videos,
         )
         if not leftover:
             if dropped:
@@ -571,10 +603,16 @@ def build_newspaper(
             continue
 
         # Сокращать больше нечего (недостаточно значимо или уже пробовали) —
-        # оставшееся выбрасывается из номера.
-        dropped.extend(leftover)
-        leftover_keys = {_key(p) for p in leftover}
-        posts = [p for p in posts if _key(p) not in leftover_keys]
+        # из номера выбрасывается столько же новостей, сколько не влезло, но
+        # наименее значимых по ВСЕМУ номеру (при равенстве — более старые,
+        # затем более короткие). Posts строго убывает, цикл сходится.
+        victims = sorted(
+            posts,
+            key=lambda p: (importance_by_key.get(_key(p), 0), p.posted_at, len(p.text)),
+        )[: len(leftover)]
+        dropped.extend(victims)
+        victim_keys = {_key(p) for p in victims}
+        posts = [p for p in posts if _key(p) not in victim_keys]
         if not posts:
             return NewspaperResult(out_paths, dropped, shortened_count, [])
 
@@ -620,6 +658,7 @@ def assemble_issue(
     outcomes = load_run(conn, run.run_id)
     if not any(o.included for o in outcomes):
         return None
+    videos = load_run_videos(conn, run.run_id)
 
     out_dir = issue_dir(config, run.run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -632,6 +671,7 @@ def assemble_issue(
     result = build_newspaper(
         config, outcomes, out_dir, basename=ISSUE_BASENAME,
         run_date=run.period_end or run.started_at, max_pages=max_pages,
+        videos=videos,
     )
     # Состав номера — "уже напечатанное" для дедупа следующих прогонов.
     save_newspaper_issue(conn, run.run_id, result)

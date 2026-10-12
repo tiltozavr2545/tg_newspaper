@@ -57,6 +57,8 @@ class SetupView:
     channels_text: str = ""
     flash: dict[str, StepResult] = field(default_factory=dict)
     channel_checks: list[tuple[str, StepResult]] = field(default_factory=list)
+    youtube_text: str = ""
+    youtube_checks: list[tuple[str, StepResult]] = field(default_factory=list)
 
 
 def _e(value: str) -> str:
@@ -188,15 +190,41 @@ def _channels_card(view: SetupView) -> str:
     body = f"""
 <form method="post" action="/setup/channels">
   <label class="field" for="channels">Каналы-источники, по одному на строку</label>
-  <textarea id="channels" name="channels" rows="8" placeholder="durov&#10;@telegram&#10;https://t.me/example_channel">{_e(view.channels_text)}</textarea>
+  <textarea id="channels" name="channels" rows="10" placeholder="# Новости&#10;rotondamedia&#10;@telegram&#10;&#10;# Блогеры&#10;https://t.me/example_channel">{_e(view.channels_text)}</textarea>
   <p class="hint">Принимаются username, @username и ссылки t.me/&lt;username&gt; — сохраняется чистый username.
-  Список пишется в config/channels.yaml.</p>
+  Строка, начинающаяся с «#», — название рубрики (секции газеты): каналы под ней относятся к ней, например
+  «# Новости». Каналы до первого заголовка — без рубрики. Список пишется в config/channels.yaml.</p>
   <div class="actions">
     <button class="submit" type="submit" name="action" value="save">Сохранить</button>
     <button class="secondary" type="submit" name="action" value="check">Сохранить и проверить доступ</button>
   </div>
 </form>{checks}"""
     return _card(view, STEP_CHANNELS, 4, body)
+
+
+def _youtube_card(view: SetupView) -> str:
+    """Необязательный шаг: не входит в STEP_ORDER, на «готово»/следующий шаг не влияет."""
+    checks = ""
+    if view.youtube_checks:
+        items = "".join(
+            f'<li class="{"ok" if r.ok else "err"}">{_e(src)} — {_e(r.message)}</li>'
+            for src, r in view.youtube_checks
+        )
+        checks = f'<ul class="checks">{items}</ul>'
+    body = f"""
+<form method="post" action="/setup/youtube">
+  <label class="field" for="youtube">YouTube-каналы, по одному на строку</label>
+  <textarea id="youtube" name="youtube" rows="5" placeholder="@GoogleDevelopers&#10;https://www.youtube.com/@handle&#10;https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw">{_e(view.youtube_text)}</textarea>
+  <p class="hint">Принимаются @handle, ссылки youtube.com (@handle, /channel/UC…, /c/…, /user/…) и голый id UC….
+  При сохранении каналы проверяются по сети. Новые видео за сутки попадают в блок «Новые видео» в конце номера.
+  Шаг необязателен: пустой список — без видео.</p>
+  <div class="actions"><button class="submit" type="submit">Сохранить</button></div>
+</form>{checks}"""
+    return (
+        '<div class="card" id="step-youtube">'
+        '<h2>5. YouTube-каналы<span class="badge out">необязательно</span></h2>'
+        f"{_notice(view.flash.get('youtube'))}{body}</div>"
+    )
 
 
 def render_setup_page(view: SetupView) -> str:
@@ -216,7 +244,7 @@ def render_setup_page(view: SetupView) -> str:
         )
         footer = ""
     cards = "\n".join(
-        (_telegram_card(view), _login_card(view), _gemini_card(view), _channels_card(view))
+        (_telegram_card(view), _login_card(view), _gemini_card(view), _channels_card(view), _youtube_card(view))
     )
     return f"""<!doctype html>
 <html lang="ru">

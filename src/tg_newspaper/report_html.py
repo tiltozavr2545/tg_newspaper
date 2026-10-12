@@ -9,12 +9,16 @@
 from __future__ import annotations
 
 import html
+import os
+import subprocess
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 
+from .config import HOME_ENV, REPO_ROOT
 from .feedback import LearningStats
 from .pipeline import PostOutcome
 from .storage import Run
+from .youtube import YoutubeVideo
 
 STAGE_LABELS = {
     "heuristic": "эвристика",
@@ -269,6 +273,21 @@ def _issue_html(run_id: int, included: int, page_count: int, render_error: str |
   </div>'''
 
 
+def _videos_html(videos: list[YoutubeVideo], youtube_enabled: bool) -> str:
+    """Раздел "Новые видео": без каналов и без видео не показывается вовсе."""
+    if not videos and not youtube_enabled:
+        return ""
+    if not videos:
+        return '<div class="issue-box"><h2>Новые видео (0)</h2><p class="issue-empty">За период новых видео нет.</p></div>'
+    items = "".join(
+        f'<li>{html.escape(v.channel_title)} · '
+        f'<a href="https://youtu.be/{html.escape(v.video_id)}" target="_blank" rel="noopener">{html.escape(v.title)}</a>'
+        f' · {v.published_at.astimezone().strftime("%Y-%m-%d %H:%M")}</li>'
+        for v in videos
+    )
+    return f'<div class="issue-box"><h2>Новые видео ({len(videos)})</h2><ul>{items}</ul></div>'
+
+
 def render_run_page(
     outcomes: list[PostOutcome],
     run_id: int,
@@ -278,6 +297,8 @@ def render_run_page(
     period_end: datetime | None = None,
     issue_page_count: int = 0,
     render_error: str | None = None,
+    videos: list[YoutubeVideo] | None = None,
+    youtube_enabled: bool = False,
 ) -> str:
     outcomes_sorted = sorted(outcomes, key=lambda o: o.post.posted_at)
     total = len(outcomes_sorted)
@@ -300,6 +321,8 @@ def render_run_page(
   {_nav_html(all_runs, run_id)}
 
   {_issue_html(run_id, included, issue_page_count, render_error)}
+
+  {_videos_html(videos or [], youtube_enabled)}
 
   <div class="summary">
     <div class="stat"><span class="n">{total}</span><span class="label">всего постов</span></div>
@@ -444,11 +467,29 @@ def render_index_page(
 
 
 def _app_version() -> str:
-    """Версия установленного пакета; "dev" там, где метаданных нет."""
+    """Версия установленного пакета; "dev" там, где метаданных нет.
+
+    Номер релиза подставляет только CI при сборке, а в репозитории версия в
+    pyproject не совпадает с тегом. Поэтому при запуске из репозитория (нет
+    TG_NEWSPAPER_HOME) показываем, что это dev-сборка, и короткий хеш коммита;
+    если git недоступен, остаётся просто "+dev". В релизе — только версия.
+    """
     try:
-        return version("tg-newspaper")
+        ver = version("tg-newspaper")
     except PackageNotFoundError:
         return "dev"
+    if os.environ.get(HOME_ENV):
+        return ver
+    ver = f"{ver}+dev"
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            timeout=2, capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ver
+    commit = result.stdout.strip()
+    return f"{ver} · {commit}" if commit else ver
 
 
 def render_error_page(message: str) -> str:

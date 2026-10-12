@@ -62,6 +62,13 @@ device_scale_factor, что и финальный скриншот — инач�
 полосу". Оценка по числу символов (_estimate_row_span) — только стартовое
 приближение, чтобы не начинать цикл подгонки с одной новости за раз; за
 корректность отвечает именно измерение в браузере, а не эта оценка.
+
+Этап 7. Рубрики — секции мозаики: перед каждой идёт полноширинный ряд-заголовок
+(_header_band), ряды секций строго подряд (_fill_sheet не даёт ряду следующей
+секции встать на лист раньше отложенного ряда предыдущей, заголовок не
+остаётся сиротой, на новом листе секция начинается с "(продолжение)").
+Блок "Новые видео" (_video_bands) — последняя секция очереди; на последнем
+разрешённом max_pages листе под него резервируется место заранее.
 """
 
 from __future__ import annotations
@@ -80,6 +87,7 @@ from pathlib import Path
 from playwright.sync_api import Page, sync_playwright
 
 from .storage import Post
+from .youtube import YoutubeVideo
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +127,27 @@ PHOTO_ASPECT_CSS = "3 / 2"  # то же соотношение в синтакс
 PHOTO_CAPTION_ROWS = 1  # под подпись-титр под фото хватает одной row-unit'ы
 
 ROW_UNIT_MM = 5.2  # высота одного "кирпичика" мозаичной сетки
+
+# Рубрики (Этап 7): заголовок секции — отдельный полноширинный ряд фиксированной
+# небольшой высоты в той же сетке. Каналы без рубрики (когда рубрики вообще
+# заданы) собираются в последнюю секцию с этим названием.
+MISC_RUBRIC_TITLE = "Разное"
+CONTINUED_MARK = "(продолжение)"
+SECTION_HEADER_ROWS = 2
+VIDEOS_SECTION_TITLE = "Новые видео"
+
+# Блок "Новые видео" в конце последнего листа мозаики: карточки в 3 колонки,
+# слева превью 16:9 в цвете (не wirephoto — это не фото новости, а узнаваемая
+# обложка ролика), справа название, канал с временем и короткая ссылка.
+# Высота карточки фиксирована, чтобы высоту всего блока можно было прикинуть
+# до рендера; точное значение всё равно подтверждает _fit_bands.
+MAX_VIDEOS = 12
+VIDEO_COLUMNS = 3
+VIDEO_THUMB_W_MM = 38.0
+VIDEO_CARD_H_MM = 24.0
+VIDEO_GRID_GAP_MM = 2.4
+VIDEO_BLOCK_PAD_V_MM = 2.6
+VIDEO_MORE_LINE_MM = 6.0
 
 # Геометрия страницы для разбивки на полосы (см. render_pages, _fit_bands): сколько места
 # в мм съедают несжимаемые части листа — облегчённая шапка running-header
@@ -403,6 +432,57 @@ _STYLE_TEMPLATE = """
     overflow: hidden;
     background-color: #fdfcf8;
     padding: 2.6mm 3mm;
+  }}
+
+  /* Заголовок рубрики: "▌НАЗВАНИЕ ────" — жирный капслок с линейкой до
+     правого края; отдельный ряд сетки, не плитка (нет вензеля .card::after). */
+  .sec-head {{
+    overflow: hidden;
+    background-color: #fdfcf8;
+    padding: 0 3mm;
+  }}
+  .sec-head .card-content {{
+    display: flex; align-items: center; gap: 2.4mm; height: 100%;
+    font-family: "Superclarendon", Georgia, "Times New Roman", serif;
+    font-weight: 900; font-size: 4.6mm; line-height: 1.1;
+    text-transform: uppercase; letter-spacing: 0.9mm; white-space: nowrap;
+  }}
+  .sec-head .sec-bar {{ font-size: 6mm; letter-spacing: 0; }}
+  .sec-head .sec-cont {{
+    font-weight: 400; font-size: 2.6mm; letter-spacing: 0.4mm; color: #666;
+  }}
+  .sec-head .sec-rule {{
+    flex: 1 1 auto; height: 1.2mm; min-width: 6mm;
+    border-top: 0.6mm solid #1a1a1a; border-bottom: 0.25mm solid #1a1a1a;
+  }}
+
+  /* Блок "Новые видео" (см. _videos_band_html). */
+  .video-block {{
+    overflow: hidden;
+    background-color: #fdfcf8;
+    padding: {video_pad}mm 3mm;
+  }}
+  .video-block .card-content {{ height: 100%; }}
+  .video-grid {{
+    display: grid; grid-template-columns: repeat({video_cols}, 1fr);
+    gap: {video_gap}mm 4mm;
+  }}
+  .video-card {{ display: flex; gap: 2.6mm; height: {video_card_h}mm; overflow: hidden; }}
+  .video-thumb {{
+    flex: 0 0 {video_thumb_w}mm; width: {video_thumb_w}mm; aspect-ratio: 16 / 9;
+    background-color: #bdb8ad; overflow: hidden;
+  }}
+  .video-thumb img {{ display: block; width: 100%; height: 100%; object-fit: cover; }}
+  .video-info {{ min-width: 0; display: flex; flex-direction: column; }}
+  .video-title {{
+    font-size: 3.1mm; line-height: 1.22; font-weight: 700; margin: 0 0 1mm;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden; overflow-wrap: anywhere;
+  }}
+  .video-meta {{ font-size: 2.4mm; line-height: 1.25; color: #555; margin-bottom: 0.6mm; }}
+  .video-link {{ font-size: 2.2mm; color: #888; letter-spacing: 0.1mm; }}
+  .video-more {{
+    margin-top: 2mm; font-size: 2.8mm; font-style: italic; color: #555; text-align: right;
   }}
   /* Едва заметный водяной вензель на каждой плитке — те самые "мини
      пасхалки": инициал автора вёрстки, растиражированный так тихо, что
@@ -943,26 +1023,54 @@ class _Band:
     row_span общий на весь ряд, посчитанный по самой длинной статье в нём
     (_band_row_span) — остальные участники ряда просто получают немного
     пустого места внутри СВОЕЙ собственной плитки, если их текст короче.
-    Ряд — атомарная единица пагинации (_fit_bands, _fill_bands): либо весь
-    целиком помещается на полосу, либо весь целиком уходит на следующую."""
+    Ряд — атомарная единица пагинации (_fit_bands, _fill_sheet): либо весь
+    целиком помещается на полосу, либо весь целиком уходит на следующую.
 
-    tier: str  # "lead" | "feature" | "brief"
+    kind разделяет три вида рядов, чтобы пагинация обращалась со всем одинаково
+    (один DOM-ребёнок сетки = один ряд для header/videos, len(members) для
+    news): "news" — плитки новостей; "header" — полноширинный заголовок
+    рубрики (или блока видео); "videos" — блок "Новые видео". У header/videos
+    нет members — их готовая разметка лежит в html (число строк сетки
+    подставляется при выводе, потому что _fit_bands может его увеличить).
+    section — номер секции: по нему пагинация не даёт ряду следующей секции
+    оказаться на листе раньше ряда предыдущей; section_title — название
+    рубрики у новостных рядов ("" — рубрик в номере нет)."""
+
+    tier: str  # "lead" | "feature" | "brief" ("" у header/videos)
     col_span: int
     members: tuple[Article, ...]
     row_span: int
+    kind: str = "news"  # "news" | "header" | "videos"
+    section: int = 0
+    section_title: str = ""
+    html: str = ""
+
+
+_ROWS_PLACEHOLDER = "__ROWS__"
+
+
+def _band_child_count(band: _Band) -> int:
+    return len(band.members) if band.kind == "news" else 1
 
 
 def _band_row_span(tier: str, col_span: int, columns: int, page_w: float, members: tuple[Article, ...]) -> int:
     return max(_estimate_row_span(tier, col_span, columns, page_w, m) for m in members)
 
 
-def _make_band(tier: str, col_span: int, members: list[Article], columns: int, page_w: float) -> _Band:
+def _make_band(
+    tier: str, col_span: int, members: list[Article], columns: int, page_w: float,
+    section: int = 0, section_title: str = "",
+) -> _Band:
     members_t = tuple(members)
-    return _Band(tier, col_span, members_t, _band_row_span(tier, col_span, columns, page_w, members_t))
+    return _Band(
+        tier, col_span, members_t, _band_row_span(tier, col_span, columns, page_w, members_t),
+        section=section, section_title=section_title,
+    )
 
 
 def _group_into_bands(
-    tier: str, pool: list[Article], group_size: int, columns: int, page_w: float
+    tier: str, pool: list[Article], group_size: int, columns: int, page_w: float,
+    section: int = 0, section_title: str = "",
 ) -> list[_Band]:
     """Режет pool на полноширинные ряды по group_size статей подряд — ширина
     каждой плитки в ряду равна columns // group_size, так что group_size
@@ -970,17 +1078,74 @@ def _group_into_bands(
     ряд, если статей не хватило набрать его целиком (буквально конец
     очереди — дальше в pool ничего нет), не оставляет дыру, а растягивает
     оставшиеся плитки на всю ширину полосы поровну между ними (см. модуль-
-    докстринг: "растянуть иконку поста" вместо серого провала в сетке)."""
+    докстринг: "растянуть иконку поста" вместо серого провала в сетке).
+    С рубриками "конец очереди" — конец СЕКЦИИ: ряды не смешивают новости
+    разных рубрик."""
     span = columns // group_size
     bands: list[_Band] = []
     for i in range(0, len(pool), group_size):
         chunk = pool[i : i + group_size]
         chunk_span = span if len(chunk) == group_size else columns // len(chunk)
-        bands.append(_make_band(tier, chunk_span, chunk, columns, page_w))
+        bands.append(_make_band(tier, chunk_span, chunk, columns, page_w, section, section_title))
     return bands
 
 
-def _build_bands(articles: list[Article], columns: int, page_w: float) -> list[_Band]:
+def _importance_order(articles: list[Article]) -> list[Article]:
+    """Новости номера по убыванию значимости: лид первым (самая значимая,
+    тай-брейк при равной оценке — длина текста), дальше по оценке, при равной
+    — более старые раньше. Это глобальный ранг: тиры (lead/feature/brief) и
+    выбор анонсов афиши считаются по нему, а не по порядку рядов — с
+    рубриками порядок рядов уже другой."""
+    if not articles:
+        return []
+    by_importance = sorted(articles, key=lambda a: (a.importance, a.word_count), reverse=True)
+    lead, *rest = by_importance
+    return [lead, *sorted(rest, key=lambda a: (-a.importance, a.posted_at))]
+
+
+def _plan_sections(
+    articles: list[Article],
+    rubric_by_channel: dict[str, str] | None,
+    rubric_order: list[str] | None,
+) -> list[tuple[str, list[Article]]]:
+    """Секции номера: [(название, новости)] в порядке показа. Без рубрик —
+    одна безымянная секция со всеми новостями (никаких заголовков, номер как
+    до Этапа 7). С рубриками: сначала rubric_order, затем рубрики, которых
+    там нет (на случай рассинхрона конфига), и последней "Разное" для
+    каналов без рубрики. Пустые секции не печатаются. Канал ищется без учёта
+    регистра — в конфиге он мог быть записан иначе, чем в посте."""
+    if not rubric_by_channel:
+        return [("", articles)]
+    lower = {ch.lower(): name for ch, name in rubric_by_channel.items()}
+    groups: dict[str, list[Article]] = {}
+    for a in articles:
+        groups.setdefault(lower.get(a.channel.lower(), MISC_RUBRIC_TITLE), []).append(a)
+    order = list(rubric_order or [])
+    order += [n for n in dict.fromkeys(rubric_by_channel.values()) if n not in order]
+    order = [n for n in order if n != MISC_RUBRIC_TITLE] + [MISC_RUBRIC_TITLE]
+    return [(name, groups[name]) for name in order if groups.get(name)]
+
+
+def _header_band(title: str, section: int, columns: int, continued: bool = False) -> _Band:
+    cont = f'<span class="sec-cont">{CONTINUED_MARK}</span>' if continued else ""
+    inner = (
+        '<span class="sec-bar">▌</span>'
+        f'<span class="sec-title">{html.escape(title)}</span>{cont}<span class="sec-rule"></span>'
+    )
+    markup = (
+        f'<div class="sec-head" style="grid-column: span {columns}; grid-row: span {_ROWS_PLACEHOLDER};">'
+        f'<div class="card-content">{inner}</div></div>'
+    )
+    return _Band("", columns, (), SECTION_HEADER_ROWS, kind="header", section=section, section_title=title, html=markup)
+
+
+def _build_bands(
+    articles: list[Article],
+    columns: int,
+    page_w: float,
+    rubric_by_channel: dict[str, str] | None = None,
+    rubric_order: list[str] | None = None,
+) -> list[_Band]:
     """Разбивает новости на три уровня важности по LLM-оценке (importance,
     тай-брейк при равной оценке — длина текста для лида, дата публикации для
     остальных): одна широкая "передовица" на всю ширину полосы (самая
@@ -990,32 +1155,119 @@ def _build_bands(articles: list[Article], columns: int, page_w: float) -> list[_
     (brief). lead/feature/brief-ширины — columns, columns // 2 и columns // 3
     (все три — делители columns), поэтому lead всегда один в своём ряду,
     feature — парами, brief — тройками (_group_into_bands): ряды всегда
-    заполняются без остатка, кроме, возможно, самого последнего ряда во всей
-    очереди (см. его докстринг).
+    заполняются без остатка, кроме, возможно, самого последнего ряда секции
+    (см. его докстринг).
+
+    Тиры решаются ГЛОБАЛЬНО по всему номеру (_importance_order), а потом
+    новости раскладываются по рубрикам (_plan_sections): секция начинается
+    с заголовка-ряда (_header_band), внутри — те же ряды по значимости; лид
+    стоит первым в своей секции, а не обязательно в первой. Без рубрик ряды
+    идут одной очередью, ровно как раньше.
 
     Все новости номера, включая самую важную, печатаются ИМЕННО ЗДЕСЬ, в
     мозаике: титульная полоса (_cover_page_html) — это афиша-витрина, она
     только анонсирует новости крупными заголовками и фото, но не печатает
     ни одной статьи целиком, поэтому ничего из мозаики не изымает.
 
-    Порядок рядов на выходе — приоритет печати: лид первым, дальше по
-    убыванию важности — тот же порядок, в котором render_pages наполняет
-    полосы, так что при нехватке места важное попадёт в номер раньше
-    неважного (и раньше окажется среди анонсов на афише). Возвращает
-    список _Band."""
+    Порядок рядов на выходе — порядок печати внутри номера. Приоритет
+    значимости при нехватке места он больше не задаёт (с рубриками "не
+    влезло" — хвост последней секции): выбор, что выбросить, делает
+    build_newspaper по importance, а афиша берёт новости по
+    _importance_order. Возвращает плоский список _Band (заголовки секций
+    вперемешку с рядами новостей)."""
     if not articles:
         return []
 
-    by_importance = sorted(articles, key=lambda a: (a.importance, a.word_count), reverse=True)
-    lead, *rest = by_importance
-    rest_ordered = sorted(rest, key=lambda a: (-a.importance, a.posted_at))
+    ordered = _importance_order(articles)
+    tier_of: dict[int, str] = {}
+    for rank, a in enumerate(ordered):
+        tier_of[id(a)] = "lead" if rank == 0 else "feature" if rank <= FEATURE_SLOTS else "brief"
 
-    feature_pool, brief_pool = rest_ordered[:FEATURE_SLOTS], rest_ordered[FEATURE_SLOTS:]
-
-    bands = [_make_band("lead", columns, [lead], columns, page_w)]
-    bands += _group_into_bands("feature", feature_pool, 2, columns, page_w)
-    bands += _group_into_bands("brief", brief_pool, 3, columns, page_w)
+    sections = _plan_sections(articles, rubric_by_channel, rubric_order)
+    bands: list[_Band] = []
+    for sec_i, (title, sec_articles) in enumerate(sections):
+        ids = {id(a) for a in sec_articles}
+        sec_ordered = [a for a in ordered if id(a) in ids]
+        if title:
+            bands.append(_header_band(title, sec_i, columns))
+        lead_pool = [a for a in sec_ordered if tier_of[id(a)] == "lead"]
+        feature_pool = [a for a in sec_ordered if tier_of[id(a)] == "feature"]
+        brief_pool = [a for a in sec_ordered if tier_of[id(a)] == "brief"]
+        for a in lead_pool:
+            bands.append(_make_band("lead", columns, [a], columns, page_w, sec_i, title))
+        bands += _group_into_bands("feature", feature_pool, 2, columns, page_w, sec_i, title)
+        bands += _group_into_bands("brief", brief_pool, 3, columns, page_w, sec_i, title)
     return bands
+
+
+# --- Блок "Новые видео" --------------------------------------------------
+
+def _video_time_label(published_at: datetime, run_date: datetime) -> str:
+    """Локальное ЧЧ:ММ; не сегодня относительно run_date — "вчера ЧЧ:ММ"
+    (или дата, если дальше: прогон за произвольное окно)."""
+    local = published_at.astimezone()
+    rd = run_date.astimezone() if run_date.tzinfo else run_date
+    days = (rd.date() - local.date()).days
+    clock = local.strftime("%H:%M")
+    if days <= 0:
+        return clock
+    if days == 1:
+        return f"вчера {clock}"
+    return f"{local.strftime('%d.%m')} {clock}"
+
+
+def _video_card_html(video: YoutubeVideo, run_date: datetime) -> str:
+    # Короткая ссылка нужна только как подпись: бумагу не кликнуть, но по ней
+    # ролик находится руками.
+    uri = _load_photo_data_uri(video.thumbnail_path)
+    thumb = f'<img src="{uri}" alt="">' if uri else ""
+    when = _video_time_label(video.published_at, run_date)
+    return (
+        '<div class="video-card">'
+        f'<div class="video-thumb">{thumb}</div>'
+        '<div class="video-info">'
+        f'<div class="video-title">{html.escape(video.title)}</div>'
+        f'<div class="video-meta">{html.escape(video.channel_title)} · {when}</div>'
+        f'<div class="video-link">youtu.be/{html.escape(video.video_id)}</div>'
+        "</div></div>"
+    )
+
+
+def _videos_block_rows(shown: int, has_more: bool) -> int:
+    """Стартовая оценка высоты блока в row-unit'ах (точное значение
+    подтверждает _fit_bands, как для текстовых плиток)."""
+    grid_rows = math.ceil(shown / VIDEO_COLUMNS)
+    mm = (
+        2 * VIDEO_BLOCK_PAD_V_MM
+        + grid_rows * VIDEO_CARD_H_MM
+        + (grid_rows - 1) * VIDEO_GRID_GAP_MM
+        + (VIDEO_MORE_LINE_MM if has_more else 0.0)
+    )
+    return math.ceil(mm / ROW_UNIT_MM)
+
+
+def _video_bands(
+    videos: list[YoutubeVideo] | None, run_date: datetime, section: int, columns: int
+) -> list[_Band]:
+    """[заголовок, блок] или [] без видео. Новые первыми, не больше
+    MAX_VIDEOS; остальные — строкой "и ещё N видео"."""
+    if not videos:
+        return []
+    ordered = sorted(videos, key=lambda v: v.published_at, reverse=True)
+    shown, hidden = ordered[:MAX_VIDEOS], len(ordered) - MAX_VIDEOS
+    cards = "".join(_video_card_html(v, run_date) for v in shown)
+    more = ""
+    if hidden > 0:
+        more = f'<div class="video-more">и ещё {hidden} видео</div>'
+    markup = (
+        f'<div class="video-block" style="grid-column: span {columns}; grid-row: span {_ROWS_PLACEHOLDER};">'
+        f'<div class="card-content"><div class="video-grid">{cards}</div>{more}</div></div>'
+    )
+    rows = _videos_block_rows(len(shown), hidden > 0)
+    return [
+        _header_band(VIDEOS_SECTION_TITLE, section, columns),
+        _Band("", columns, (), rows, kind="videos", section=section, section_title=VIDEOS_SECTION_TITLE, html=markup),
+    ]
 
 
 def _article_html(article: Article, placement: _Placement) -> str:
@@ -1100,14 +1352,15 @@ def _flatten_bands(bands: list[_Band]) -> list[Article]:
 
 
 def _band_bounds(bands: list[_Band]) -> list[tuple[int, int]]:
-    """(start, end) индексов в плоском списке статей (_flatten_bands) для
-    каждого ряда — чтобы перевести индексы карточек из результата
-    _OVERFLOW_CHECK_JS (он видит только плоский DOM) обратно в ряды."""
+    """(start, end) индексов детей .mosaic для каждого ряда — чтобы перевести
+    индексы из результата _OVERFLOW_CHECK_JS (он видит только плоский DOM)
+    обратно в ряды. Заголовок и блок видео — по одному ребёнку на ряд."""
     bounds = []
     pos = 0
     for b in bands:
-        bounds.append((pos, pos + len(b.members)))
-        pos += len(b.members)
+        n = _band_child_count(b)
+        bounds.append((pos, pos + n))
+        pos += n
     return bounds
 
 
@@ -1118,7 +1371,8 @@ def _fit_bands(
     row_unit_px: float,
     columns: int,
     page_w: float,
-    build_probe_html: Callable[[list[Article]], str],
+    build_probe_html: Callable[[list[_Band]], str],
+    tail_count: int = 0,
 ) -> tuple[list[_Band], list[_Band]]:
     """Реально рендерит ряды-кандидаты в headless-браузере и смотрит, что не
     влезло — это не оценка, а измерение в настоящем layout-движке Chromium,
@@ -1140,6 +1394,11 @@ def _fit_bands(
       пункту не осталось — иначе лишняя высота у одного ряда может ВНОВЬ
       вытолкнуть другой за край).
 
+    tail_count — сколько последних рядов queue зарезервировано (блок "Новые
+    видео" на последнем листе): они не выкидываются, а при нехватке места
+    вместо них освобождается место последним НОВОСТНЫМ рядом — резерв под
+    видео важнее, чем ещё одна новость.
+
     Возвращает (влезло на этой полосе, не влезло — на следующую), оба как
     списки _Band."""
     queue = list(candidates)
@@ -1147,9 +1406,8 @@ def _fit_bands(
     iteration = 0
     while queue:
         iteration += 1
-        flat = _flatten_bands(queue)
         bounds = _band_bounds(queue)
-        probe_page.set_content(build_probe_html(flat), wait_until="load")
+        probe_page.set_content(build_probe_html(queue), wait_until="load")
         result = probe_page.eval_on_selector(".mosaic", _OVERFLOW_CHECK_JS) or {}
         content_overflow = result.get("contentOverflow") or []
         box_overflow = set(result.get("boxOverflow") or [])
@@ -1179,6 +1437,12 @@ def _fit_bands(
             return queue, overflow_accum
 
         bad_bands = {_band_index_of(i) for i in box_overflow}
+        if tail_count:
+            news_n = len(queue) - tail_count
+            if any(i >= news_n for i in bad_bands):
+                if news_n <= 0:
+                    return queue, overflow_accum  # резерв не влезает и сам по себе — убирать нечего
+                bad_bands = {i for i in bad_bands if i < news_n} | {news_n - 1}
         fitted = [b for i, b in enumerate(queue) if i not in bad_bands]
         newly_bad = [b for i, b in enumerate(queue) if i in bad_bands]
         if not fitted:
@@ -1193,7 +1457,8 @@ def _fit_bands(
                     # каждую по отдельности — шире колонка, короче строка
                     # нужна на единицу текста, ниже требуемая высота.
                     solo_bands = [
-                        _make_band(band.tier, columns, [m], columns, page_w) for m in band.members
+                        _make_band(band.tier, columns, [m], columns, page_w, band.section, band.section_title)
+                        for m in band.members
                     ]
                     for b in solo_bands:
                         for m in b.members:
@@ -1220,17 +1485,18 @@ def _fit_bands(
     return queue, overflow_accum
 
 
-def _fill_bands(
+def _fill_sheet(
     probe_page: Page,
     remaining: list[_Band],
+    tail: list[_Band],
     placements: dict[int, _Placement],
     row_unit_px: float,
     columns: int,
     page_w: float,
     avail_rows: int,
-    build_probe_html: Callable[[list[Article]], str],
+    build_probe_html: Callable[[list[_Band]], str],
 ) -> tuple[list[_Band], list[_Band]]:
-    """Наполняет одну полосу рядами, не останавливаясь на первой удачной, но
+    """Наполняет один лист рядами, не останавливаясь на первой удачной, но
     осторожной оценке (_seed_bands). Пример реальной проблемы, которую это
     чинит: первый ряд очереди оказался коротким — его реальная высота
     небольшая, а _seed_bands, посчитав по нему бюджет "ячеек" на глаз,
@@ -1242,25 +1508,98 @@ def _fill_bands(
 
     После стартовой партии пробуем добавить остаток ПО ОДНОМУ ряду — и,
     важно, не останавливаемся на первом же, который не влез: он просто
-    откладывается (skipped), а дальше пробуются следующие. Иначе один
-    крупный ряд в начале очереди блокировал бы место для более мелких,
-    которые прекрасно поместились бы в тот же остаток."""
-    seed_n = _seed_bands(remaining, columns, avail_rows)
-    current, rest = remaining[:seed_n], remaining[seed_n:]
-    fitted, overflow = _fit_bands(probe_page, current, placements, row_unit_px, columns, page_w, build_probe_html)
-    current = fitted
+    откладывается, а дальше пробуются следующие. Иначе один крупный ряд в
+    начале очереди блокировал бы место для более мелких, которые прекрасно
+    поместились бы в тот же остаток. С рубриками (секциями) это разрешено
+    только в пределах ТЕКУЩЕЙ секции: как только из секции что-то отложено,
+    ряды следующих секций на этом листе не берутся — секции идут строго
+    подряд, ряд следующей не может встать на лист раньше ряда предыдущей.
+    Ценой может остаться немного пустого места внизу листа.
+
+    Заголовок секции не бывает сиротой: он ставится на лист только вместе с
+    первым рядом своей секции (пара пробуется целиком), иначе переносится
+    на следующий лист. Если секция началась на прошлом листе, на этом в
+    начало ставится её заголовок с пометкой "(продолжение)".
+
+    tail — зарезервированные ряды в конце листа (блок "Новые видео" на
+    последнем разрешённом листе): они присутствуют во всех пробах, так что
+    новости занимают только то, что осталось. Возвращает (ряды листа вместе
+    с хвостом, отложенные ряды очереди — без хвоста)."""
+    tail = list(tail)
+    n_tail = len(tail)
+
+    def fit(cur: list[_Band]) -> tuple[list[_Band], list[_Band]]:
+        nonlocal tail
+        fitted, over = _fit_bands(
+            probe_page, cur + tail, placements, row_unit_px, columns, page_w, build_probe_html, tail_count=n_tail
+        )
+        if n_tail:
+            tail = fitted[-n_tail:]  # высота блока могла вырасти по результатам замера
+            fitted = fitted[:-n_tail]
+        return fitted, over
+
+    items = list(remaining)
+    if items and items[0].kind == "news" and items[0].section_title:
+        items.insert(0, _header_band(items[0].section_title, items[0].section, columns, continued=True))
+
+    tail_rows = sum(b.row_span for b in tail)
+    seed_n = _seed_bands(items, columns, max(avail_rows - tail_rows, 1)) if items else 0
+    fitted, overflow = fit(items[:seed_n])
+    rest = items[seed_n:]
+    if fitted and fitted[-1].kind == "header":  # сирота на краю стартовой партии
+        overflow.insert(0, fitted.pop())
     pending = overflow + rest
 
+    if items and not fitted:
+        # Ни один ряд не встал (первый не влез вместе с заголовком, либо
+        # партия состояла из одного заголовка) — иначе лист остался бы пустым,
+        # а очередь не сдвинулась. Берём первый ряд без заголовка: один он
+        # влезает всегда (это гарантирует _fit_bands). Заголовок продолжения
+        # перед ним при этом не нужен — секция и так продолжается с него.
+        first = next((i for i, b in enumerate(pending) if b.kind != "header"), None)
+        if first is None:
+            pending = []  # одни заголовки без рядов — выбрасываем, иначе цикл листов не сдвинется
+        else:
+            fitted, over = fit([pending[first]])
+            cut = first
+            if fitted and first > 0 and pending[first - 1].section == pending[first].section:
+                cut = first - 1
+            pending = pending[:cut] + over + pending[first + 1 :]
+            if not fitted:
+                logger.warning("лист мозаики: резерв под видео не оставил места ни одной новости")
+    current = fitted
+
     skipped: list[_Band] = []
-    for candidate in pending:
-        trial_fitted, trial_overflow = _fit_bands(
-            probe_page, current + [candidate], placements, row_unit_px, columns, page_w, build_probe_html
-        )
+    open_header: _Band | None = None  # заголовок текущей секции, ещё не поставленный на лист
+    sec_skipped: list[_Band] = []  # отложенные ряды текущей секции
+
+    def close_section() -> None:
+        nonlocal open_header, sec_skipped
+        if open_header is not None:
+            skipped.append(open_header)
+        skipped.extend(sec_skipped)
+        open_header, sec_skipped = None, []
+
+    for item in pending:
+        if item.kind == "header":
+            close_section()
+            if skipped:  # из предыдущих секций уже что-то отложено — эта секция сюда не встаёт
+                skipped.append(item)
+            else:
+                open_header = item
+            continue
+        if skipped:
+            skipped.append(item)
+            continue
+        extra = [open_header] if open_header is not None else []
+        trial_fitted, trial_overflow = fit(current + extra + [item])
         if trial_overflow:
-            skipped.append(candidate)
+            sec_skipped.append(item)
             continue
         current = trial_fitted
-    return current, skipped
+        open_header = None
+    close_section()
+    return current + tail, skipped
 
 
 # Уголковые метки-крестики (см. .reg-mark в _STYLE_TEMPLATE) — одинаковые
@@ -1275,8 +1614,14 @@ def _footer_suffix(page_num: int, total_pages: int) -> str:
     return f" · стр. {page_num}/{total_pages}" if total_pages > 1 else ""
 
 
+def _band_html(band: _Band, placements: dict[int, _Placement]) -> str:
+    if band.kind == "news":
+        return "\n".join(_article_html(a, placements[id(a)]) for a in band.members)
+    return band.html.replace(_ROWS_PLACEHOLDER, str(band.row_span))
+
+
 def _page_html(
-    page_articles: list[Article],
+    page_bands: list[_Band],
     placements: dict[int, _Placement],
     page_num: int,
     total_pages: int,
@@ -1286,7 +1631,7 @@ def _page_html(
     титульная полоса (_cover_page_html). Все листы мозаики одинаковы: без
     исключения облегчённая running-header, большой мастхед эксклюзивно на
     обложке (см. модуль-докстринг)."""
-    cards_html = "\n".join(_article_html(a, placements[id(a)]) for a in page_articles)
+    cards_html = "\n".join(_band_html(b, placements) for b in page_bands)
 
     header_html = f"""
     <div class="running-header">
@@ -1545,6 +1890,9 @@ def render_pages(
     photo_path_by_key: dict[tuple[str, int], str] | None = None,
     issue_number: int = 0,
     teaser_provider: Callable[[list[Post]], dict[tuple[str, int], tuple[str, str]]] | None = None,
+    rubric_by_channel: dict[str, str] | None = None,
+    rubric_order: list[str] | None = None,
+    videos: list[YoutubeVideo] | None = None,
 ) -> tuple[list[Path], list[Post]]:
     """Рендерит газету в одну или несколько PNG нужного физического размера
     при заданном DPI. Вьюпорт браузера выставляется в CSS-пикселях под точный
@@ -1620,7 +1968,17 @@ def render_pages(
     БД — вызывающий код (build_newspaper) его не передаёт, поэтому по
     умолчанию всегда 0; параметр существует уже сейчас, чтобы наружное
     подключение (например, к run_id из storage.py) было чистым добавлением
-    одной строки, без переделки сигнатуры."""
+    одной строки, без переделки сигнатуры.
+
+    rubric_by_channel/rubric_order (Этап 7) — рубрики как секции мозаики (см.
+    _build_bands, _fill_sheet): пустые — номер без секций, как раньше.
+
+    videos — блок "Новые видео" в конце ПОСЛЕДНЕГО листа мозаики. Место под
+    него гарантировано и новости его вытеснить не могут: на последнем
+    разрешённом max_pages листе блок резервируется заранее (tail в
+    _fill_sheet), а новости, которым из-за этого не хватило места, уходят в
+    leftover — build_newspaper их сократит или выбросит. Нет видео — нет и
+    блока."""
     run_date = run_date or datetime.now()
     page_w, page_h = PAGE_SIZES_MM[page_size]
     if landscape:
@@ -1653,7 +2011,7 @@ def render_pages(
     # порядок этого списка решает, что попадёт в номер, если места на всех
     # не хватит, важное должно оказаться раньше в очереди (и раньше — среди
     # анонсов на афише, см. ниже).
-    bands_all = _build_bands(articles, columns, page_w)
+    bands_all = _build_bands(articles, columns, page_w, rubric_by_channel, rubric_order)
     placements: dict[int, _Placement] = {}
     for b in bands_all:
         for m in b.members:
@@ -1668,6 +2026,11 @@ def render_pages(
         row_unit=ROW_UNIT_MM,
         lead_col=columns,
         photo_aspect=PHOTO_ASPECT_CSS,
+        video_pad=VIDEO_BLOCK_PAD_V_MM,
+        video_cols=VIDEO_COLUMNS,
+        video_gap=VIDEO_GRID_GAP_MM,
+        video_card_h=VIDEO_CARD_H_MM,
+        video_thumb_w=VIDEO_THUMB_W_MM,
     )
     date_label = run_date.strftime("%d.%m.%Y")
 
@@ -1700,13 +2063,16 @@ def render_pages(
             )
             probe_page = context.new_page()
 
-            sheets: list[list[Article]] = []
-            remaining = bands_all
+            sheets: list[list[_Band]] = []
+            # Блок видео — последняя "секция" очереди: идёт за всеми новостями.
+            video_section = 1 + max((b.section for b in bands_all), default=0)
+            video_items = _video_bands(videos, run_date, video_section, columns)
+            remaining = bands_all + video_items
             while remaining:
                 # Вся мозаика печатается с одной и той же running-header —
                 # никакого "первый лист особенный" больше нет, большой
                 # мастхед эксклюзивно на обложке (см. докстринг функции).
-                def build_probe(queue: list[Article]) -> str:
+                def build_probe(queue: list[_Band]) -> str:
                     # page_num/total_pages тут — заглушки: реальная
                     # нумерация известна только после того, как посчитано
                     # итоговое число листов мозаики (см. ниже). На высоту
@@ -1716,10 +2082,20 @@ def render_pages(
                     return wrap(_page_html(queue, placements, 2, 2, date_label))
 
                 candidates_count = len(remaining)
-                fitted_bands, remaining = _fill_bands(
-                    probe_page, remaining, placements, row_unit_px, columns, page_w, avail_rows, build_probe
+                # Последний разрешённый лист: блок видео резервируется заранее.
+                tail: list[_Band] = []
+                if (
+                    max_sheets is not None
+                    and len(sheets) == max_sheets - 1
+                    and video_items
+                    and remaining[-1].kind == "videos"
+                ):
+                    tail = remaining[-len(video_items):]
+                    remaining = remaining[: -len(video_items)]
+                fitted_bands, remaining = _fill_sheet(
+                    probe_page, remaining, tail, placements, row_unit_px, columns, page_w, avail_rows, build_probe
                 )
-                sheets.append(_flatten_bands(fitted_bands))
+                sheets.append(fitted_bands)
                 logger.info(
                     "лист мозаики %d: рядов в очереди было=%d влезло=%d осталось_в_очереди=%d",
                     len(sheets), candidates_count, len(fitted_bands), len(remaining),
@@ -1730,13 +2106,16 @@ def render_pages(
             # Если вышли по max_sheets, а не по опустевшей очереди — то, что
             # осталось, в номер не попадает вообще (см. докстринг). Отдаём
             # исходные Post вызывающему коду вместо рендера лишних листов.
-            leftover_posts = [m.post for b in remaining for m in b.members]
+            leftover_posts = [m.post for b in remaining for m in b.members]  # у header/videos members пуст
 
             # Анонсы афиши — из уже РЕАЛЬНО напечатанных (влезших) новостей,
             # в порядке значимости (_build_bands кладёт лид первым), а не из
             # bands_all целиком: иначе афиша зазывала бы на статью, которая в
             # итоге не поместилась и была выброшена (см. build_newspaper).
-            fitted_articles = [a for sheet_articles in sheets for a in sheet_articles]
+            # Порядок рядов с рубриками уже не равен порядку значимости, поэтому
+            # анонсы выбираются по глобальному рангу (_importance_order).
+            placed_ids = {id(m) for sheet_bands in sheets for b in sheet_bands for m in b.members}
+            fitted_articles = [a for a in _importance_order(articles) if id(a) in placed_ids]
             main_article = fitted_articles[0]
             secondary_articles = fitted_articles[1 : 1 + COVER_SECONDARY_COUNT]
             rest_for_teasers = fitted_articles[1 + COVER_SECONDARY_COUNT :]
@@ -1800,8 +2179,8 @@ def render_pages(
                 secondary_column_mm, main_block_mm, content_w,
             )
             mosaic_html = "\n".join(
-                _page_html(sheet_articles, placements, i + 2, total_pages, date_label)
-                for i, sheet_articles in enumerate(sheets)
+                _page_html(sheet_bands, placements, i + 2, total_pages, date_label)
+                for i, sheet_bands in enumerate(sheets)
             )
             all_sheets_html = cover_html + "\n" + mosaic_html
             total_page_divs = 1 + len(sheets)  # обложка + листы мозаики

@@ -5,7 +5,8 @@
   1. Telegram API (api_id/api_hash)  -> .env
   2. вход в Telegram-аккаунт         -> файл сессии Telethon
   3. Gemini (ключ/модель/прокси)     -> .env
-  4. список каналов                  -> config/channels.yaml
+  4. список каналов (с рубриками)    -> config/channels.yaml
+  (+ необязательно: YouTube-каналы для блока "Новые видео" -> там же)
 Бот-токена нет и не будет: сбор идёт по MTProto под пользовательским
 аккаунтом (см. AGENTS.md). Сессия и api_hash — секреты: не логируются, в HTML
 и сообщения об ошибках попадают только в маскированном виде.
@@ -29,7 +30,8 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from .config import channels_path, env_path, session_base
+from .config import ChannelsFile, channels_path, env_path, read_channels_file, session_base
+from .youtube import YoutubeChannel, YoutubeError, resolve_channel
 
 logger = logging.getLogger(__name__)
 
@@ -196,34 +198,69 @@ def normalize_channel(raw: str) -> str | None:
     return item if _USERNAME.fullmatch(item) else None
 
 
-def normalize_channels(text: str) -> tuple[list[str], list[str]]:
-    """Из текста textarea — (каналы, нераспознанное). По одному на строку, но
-    запятые/пробелы внутри строки тоже разделяют. Дубли (без учёта регистра)
-    убираются, порядок первого появления сохраняется, пустые строки пропускаются."""
-    channels: list[str] = []
+def parse_channels_text(text: str) -> tuple[ChannelsFile, list[str]]:
+    """Из текста textarea — (структура без youtube, нераспознанное). Строка с
+    `#` — заголовок рубрики (целиком, с пробелами: "# Мир и политика"), каналы
+    после неё принадлежат ей; до первого заголовка — без рубрики. Разбор
+    построчно: нарезка всего текста по пробелам сломала бы заголовки. Внутри
+    обычных строк запятые/пробелы разделяют каналы. Дубли (без учёта регистра)
+    убираются, остаётся первое упоминание; пустая рубрика допустима."""
+    cf = ChannelsFile()
     invalid: list[str] = []
     seen: set[str] = set()
-    for chunk in re.split(r"[\s,;]+", text):
-        if not chunk:
+    current: list[str] = cf.loose
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            name = stripped.lstrip("#").strip()
+            if not name:
+                invalid.append(stripped)
+                continue
+            existing = next((chs for n, chs in cf.rubrics if n == name), None)
+            if existing is None:
+                existing = []
+                cf.rubrics.append((name, existing))
+            current = existing
             continue
-        name = normalize_channel(chunk)
-        if name is None:
-            invalid.append(chunk)
-        elif name.lower() not in seen:
-            seen.add(name.lower())
-            channels.append(name)
-    return channels, invalid
+        for chunk in re.split(r"[\s,;]+", stripped):
+            if not chunk:
+                continue
+            ch = normalize_channel(chunk)
+            if ch is None:
+                invalid.append(chunk)
+            elif ch.lower() not in seen:
+                seen.add(ch.lower())
+                current.append(ch)
+    return cf, invalid
+
+
+def channels_to_text(cf: ChannelsFile) -> str:
+    """Обратное к parse_channels_text: то, что показывается в textarea."""
+    blocks: list[str] = []
+    if cf.loose:
+        blocks.append("\n".join(cf.loose))
+    for name, chs in cf.rubrics:
+        blocks.append("\n".join([f"# {name}", *chs]))
+    return "\n\n".join(blocks)
 
 
 _CHANNELS_HEADER = (
     "# Список каналов-источников. Правится в консоли (мастер настройки) или руками.\n"
-    "# Формат — username канала без @ (как в ссылке t.me/<username>).\n"
+    "# Канал — username без @ (как в ссылке t.me/<username>). rubrics — секции газеты,\n"
+    "# channels — каналы без рубрики, youtube — каналы для блока \"Новые видео\".\n"
 )
 
 
-def save_channels(path: Path, channels: list[str]) -> None:
-    """Пишет channels.yaml в формате channels.example.yaml (атомарно)."""
-    body = yaml.safe_dump({"channels": channels}, allow_unicode=True, sort_keys=False)
+def save_channels(path: Path, cf: ChannelsFile) -> None:
+    """Пишет channels.yaml (атомарно). Без рубрик и youtube получается прежний
+    формат `channels: [...]`."""
+    data: dict[str, object] = {}
+    if cf.rubrics:
+        data["rubrics"] = [{"name": n, "channels": list(chs)} for n, chs in cf.rubrics]
+    data["channels"] = list(cf.loose)
+    if cf.youtube:
+        data["youtube"] = [{"id": y.channel_id, "title": y.title, "source": y.source} for y in cf.youtube]
+    body = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".channels.", suffix=".tmp")
     try:
@@ -237,14 +274,48 @@ def save_channels(path: Path, channels: list[str]) -> None:
         raise
 
 
-def load_channels(path: Path) -> list[str]:
-    """Каналы из channels.yaml; пустой список, если файла нет или он битый."""
+def load_channels(path: Path) -> ChannelsFile:
+    """channels.yaml целиком; пустая структура, если файла нет или он битый."""
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        channels = data["channels"]
-        return [str(c) for c in channels] if isinstance(channels, list) else []
-    except (OSError, yaml.YAMLError, KeyError, TypeError):
-        return []
+        return read_channels_file(path)
+    except (OSError, yaml.YAMLError):
+        return ChannelsFile()
+
+
+# ---------------------------------------------------------------- YouTube
+
+def youtube_to_text(channels: list[YoutubeChannel]) -> str:
+    """Для textarea: то, что вводил пользователь (source), по одному на строку."""
+    return "\n".join(c.source for c in channels)
+
+
+def resolve_youtube_text(
+    text: str, known: list[YoutubeChannel], resolver=resolve_channel
+) -> tuple[list[YoutubeChannel], list[tuple[str, StepResult]]]:
+    """Из текста textarea — (каналы, результаты по строкам). Строки с тем же
+    source, что уже сохранён, не резолвим повторно (id/название из файла) —
+    сеть нужна только для новых. Дубли по id схлопываются. Если есть ошибки,
+    вызывающий не сохраняет ничего."""
+    by_source = {c.source: c for c in known}
+    channels: list[YoutubeChannel] = []
+    results: list[tuple[str, StepResult]] = []
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        ch = by_source.get(raw)
+        if ch is None:
+            try:
+                ch = resolver(raw)
+            except YoutubeError as exc:
+                results.append((raw, StepResult(False, str(exc))))
+                continue
+        if any(c.channel_id == ch.channel_id for c in channels):
+            results.append((raw, StepResult(True, f"повтор: {ch.title}")))
+            continue
+        channels.append(ch)
+        results.append((raw, StepResult(True, f"{ch.title} ({ch.channel_id})")))
+    return channels, results
 
 
 # ---------------------------------------------------------------- Telegram
@@ -621,7 +692,7 @@ def compute_status(check_session: bool = True) -> list[StepStatus]:
     else:
         steps.append(StepStatus(STEP_GEMINI, STEP_TITLES[STEP_GEMINI], True, f"ключ {mask_secret(key)}, модель {env_value('GEMINI_MODEL', DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL}, прокси {proxy}"))
 
-    channels = load_channels(channels_path())
+    channels = load_channels(channels_path()).channels
     if channels:
         steps.append(StepStatus(STEP_CHANNELS, STEP_TITLES[STEP_CHANNELS], True, f"каналов: {len(channels)}"))
     else:

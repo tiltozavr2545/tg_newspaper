@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .youtube import YoutubeVideo
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS posts (
     channel TEXT NOT NULL,
@@ -250,7 +252,49 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE pipeline_outcomes ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''"
         )
 
+    # Этап 7: новые видео привязаны к прогону, чтобы пересборка номера брала
+    # те же видео без сети (как photo_path у постов).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS youtube_videos (
+            run_id INTEGER NOT NULL,
+            video_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_title TEXT NOT NULL,
+            title TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            thumbnail_path TEXT,
+            PRIMARY KEY (run_id, video_id)
+        )"""
+    )
+
     conn.commit()
+
+
+def save_run_videos(conn: sqlite3.Connection, run_id: int, videos: list[YoutubeVideo]) -> None:
+    """Видео, собранные в этом прогоне (повторное сохранение перезаписывает)."""
+    conn.executemany(
+        "INSERT OR REPLACE INTO youtube_videos (run_id, video_id, channel_id, channel_title, "
+        "title, published_at, thumbnail_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (run_id, v.video_id, v.channel_id, v.channel_title, v.title,
+             v.published_at.astimezone(timezone.utc).isoformat(), v.thumbnail_path)
+            for v in videos
+        ],
+    )
+    conn.commit()
+
+
+def load_run_videos(conn: sqlite3.Connection, run_id: int) -> list[YoutubeVideo]:
+    """Видео прогона, новые первыми."""
+    rows = conn.execute(
+        "SELECT video_id, channel_id, channel_title, title, published_at, thumbnail_path "
+        "FROM youtube_videos WHERE run_id = ? ORDER BY published_at DESC",
+        (run_id,),
+    ).fetchall()
+    return [
+        YoutubeVideo(vid, cid, ctitle, title, datetime.fromisoformat(pub), thumb)
+        for vid, cid, ctitle, title, pub, thumb in rows
+    ]
 
 
 def load_posts(

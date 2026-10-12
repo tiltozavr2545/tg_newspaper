@@ -1,4 +1,19 @@
 # Список каналов-источников. Скопировать в channels.yaml и заполнить.
-# Формат — username канала без @ (как в ссылке t.me/<username>).
+# Канал — username без @ (как в ссылке t.me/<username>).
+#
+# rubrics — рубрики (секции газеты): имя и каналы. Порядок рубрик = порядок в номере.
+rubrics:
+  - name: Новости
+    channels: [example_news_channel, another_news_channel]
+  - name: Блогеры
+    channels: [example_blogger]
+# channels — каналы без рубрики (необязательно; можно оставить только этот ключ
+# без rubrics — это прежний формат).
 channels:
   - example_channel
+# youtube — каналы для блока "Новые видео" (необязательно). id — UC..., title и
+# source мастер настройки заполняет сам при добавлении канала.
+youtube:
+  - id: UC_x5XG1OV2P6uZZ5FSM9Ttw
+    title: Google for Developers
+    source: "@GoogleDevelopers"

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+
+from .youtube import YoutubeChannel
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Базовый каталог данных пользователя: .env, channels.yaml, БД, фото, сессия.
@@ -109,6 +111,92 @@ class Config:
     gemini_api_key: str
     gemini_model: str
     gemini_base_url: str  # прокси к Gemini (Cloudflare Worker); пусто = напрямую
+    # Этап 7: рубрики (секции мозаики) и YouTube-каналы для блока "Новые видео".
+    # Канал без рубрики в rubric_by_channel отсутствует; rubric_order — порядок
+    # секций в номере (как в channels.yaml). Пустые — номер без секций, как раньше.
+    rubric_by_channel: dict[str, str] = field(default_factory=dict)
+    rubric_order: list[str] = field(default_factory=list)
+    youtube_channels: list[YoutubeChannel] = field(default_factory=list)
+
+
+@dataclass
+class ChannelsFile:
+    """Содержимое channels.yaml: рубрики (в порядке файла), каналы без рубрики и
+    YouTube-каналы. Единственное место разбора формата — им пользуются
+    load_config, мастер настройки и compute_status."""
+
+    rubrics: list[tuple[str, list[str]]] = field(default_factory=list)
+    loose: list[str] = field(default_factory=list)
+    youtube: list[YoutubeChannel] = field(default_factory=list)
+
+    @property
+    def channels(self) -> list[str]:
+        """Все телеграм-каналы без дублей: сначала рубрики по порядку, затем без рубрики."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for ch in [c for _, chs in self.rubrics for c in chs] + self.loose:
+            if ch.lower() not in seen:
+                seen.add(ch.lower())
+                out.append(ch)
+        return out
+
+    @property
+    def rubric_by_channel(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        taken: set[str] = set()
+        for name, chs in self.rubrics:
+            for ch in chs:
+                if ch.lower() not in taken:  # канал в двух рубриках — первая выигрывает
+                    taken.add(ch.lower())
+                    result[ch] = name
+        return result
+
+    @property
+    def rubric_order(self) -> list[str]:
+        return [name for name, _ in self.rubrics]
+
+
+def parse_channels_data(data: object) -> ChannelsFile:
+    """Разбирает загруженный YAML. Старый формат (только `channels: [...]`) —
+    без рубрик. Дубли каналов (без учёта регистра) схлопываются: остаётся
+    первое упоминание. Кривые записи молча пропускаются — файл правят и руками."""
+    if not isinstance(data, dict):
+        return ChannelsFile()
+    seen: set[str] = set()
+
+    def take(items: object) -> list[str]:
+        out: list[str] = []
+        for item in items if isinstance(items, list) else []:
+            ch = str(item).strip().lstrip("@")
+            if ch and ch.lower() not in seen:
+                seen.add(ch.lower())
+                out.append(ch)
+        return out
+
+    rubrics: list[tuple[str, list[str]]] = []
+    for r in data.get("rubrics") or []:
+        if not isinstance(r, dict) or not str(r.get("name") or "").strip():
+            continue
+        name = str(r["name"]).strip()
+        chs = take(r.get("channels"))
+        existing = next((i for i, (n, _) in enumerate(rubrics) if n == name), None)
+        if existing is None:
+            rubrics.append((name, chs))
+        else:  # одноимённые рубрики сливаем
+            rubrics[existing][1].extend(chs)
+    loose = take(data.get("channels"))
+    youtube: list[YoutubeChannel] = []
+    for y in data.get("youtube") or []:
+        if isinstance(y, dict) and y.get("id"):
+            cid = str(y["id"]).strip()
+            if all(c.channel_id != cid for c in youtube):
+                youtube.append(YoutubeChannel(cid, str(y.get("title") or cid), str(y.get("source") or cid)))
+    return ChannelsFile(rubrics, loose, youtube)
+
+
+def read_channels_file(path: Path) -> ChannelsFile:
+    """channels.yaml -> ChannelsFile; бросает OSError/yaml.YAMLError, если файла нет или он битый."""
+    return parse_channels_data(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
 def load_config() -> Config:
@@ -118,17 +206,19 @@ def load_config() -> Config:
     api_hash = os.environ["TG_API_HASH"]
     session_name = os.environ.get("TG_SESSION_NAME", "tg_newspaper")
 
-    channels_data = yaml.safe_load(channels_path().read_text(encoding="utf-8"))
-    channels = channels_data["channels"]
+    cf = read_channels_file(channels_path())
 
     return Config(
         api_id=int(api_id),
         api_hash=api_hash,
         session_name=session_base(session_name),
-        channels=channels,
+        channels=cf.channels,
         db_path=db_path(),
         media_dir=media_dir(),
         gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
         gemini_base_url=os.environ.get("GEMINI_BASE_URL", "").strip().rstrip("/"),
+        rubric_by_channel=cf.rubric_by_channel,
+        rubric_order=cf.rubric_order,
+        youtube_channels=cf.youtube,
     )
