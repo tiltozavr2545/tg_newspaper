@@ -224,6 +224,10 @@ COVER_SECONDARY_COUNT = 3  # вторичные анонсы в ряд под г
 # конечно во второй половине всего трём заголовкам").
 COVER_TERTIARY_COUNT = 4
 TEASER_TOP_COUNT = 2  # рамки-анонсы над плашкой мастхеда
+# Сколько новостей нужно, чтобы афиша заполнилась целиком: слоты берутся
+# по порядку значимости — главный, вторичные, рамки над мастхедом, третий
+# ряд (см. render_pages). При меньшем числе последний ряд остаётся неполным.
+COVER_MIN_ARTICLES = 1 + COVER_SECONDARY_COUNT + TEASER_TOP_COUNT + COVER_TERTIARY_COUNT
 TEASER_BOTTOM_COUNT = 3  # пункты в нижней инверсной полосе
 # Для скольких новостей просим у LLM крикливые анонсы (screamer + подводка,
 # см. classifier.teasers): главный плюс вторичные — остальным хватает
@@ -758,10 +762,16 @@ _LEADING_BOLD_RE = re.compile(
 _MAX_HEADLINE_MARKUP_LEN = 200
 
 
+# Markdown-ссылка "[текст](url)": группа 1 — видимый текст, 2 — адрес.
+# html.escape не трогает "[]()", поэтому тот же паттерн годится и для уже
+# экранированного текста (_inline_markdown_to_html).
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
 def _inline_markdown_to_html(escaped_text: str) -> str:
     """escaped_text уже прогнан через html.escape — тут только разметка
     Telegram-markdown (жирный/подчёркнутый/курсив/код/ссылки) в HTML-теги."""
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", escaped_text)  # ссылка -> её видимый текст, вести печатной странице некуда
+    text = _LINK_RE.sub(r"\1", escaped_text)  # ссылка -> её видимый текст, вести печатной странице некуда
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text, flags=re.DOTALL)
     text = re.sub(r"__(.+?)__", r"<u>\1</u>", text, flags=re.DOTALL)
     text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"<em>\1</em>", text, flags=re.DOTALL)
@@ -779,7 +789,6 @@ _MAX_SIGNATURE_WORDS = 4
 # Рекламный хвост из одних ссылок ("[Канал](…) | [Мы в MAX](…)") — подпись
 # при любом числе слов: после чистки эмодзи (strip_emoji) он остаётся
 # ссылками и разделителями, а слов в нём бывает больше четырёх.
-_LINK_RE = re.compile(r"\[[^\]]+\]\([^)]+\)")
 _LINK_SEPARATORS_RE = re.compile(r"[\s|•·—\-/,]+")
 
 
@@ -788,7 +797,7 @@ def _looks_like_signature(paragraph: str) -> bool:
         return False
     if not _LINK_SEPARATORS_RE.sub("", _LINK_RE.sub("", paragraph)):
         return True
-    resolved = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", paragraph)
+    resolved = _LINK_RE.sub(r"\1", paragraph)
     return len(resolved.split()) <= _MAX_SIGNATURE_WORDS
 
 
@@ -811,30 +820,54 @@ _EMOJI_RE = re.compile(
     "\uFE0E\uFE0F\u200D\u20E3"  # селекторы вариантов, ZWJ, keycap
     "]"
 )
-_EMPTY_BOLD_RE = re.compile(r"\*\*([^*\n]*)\*\*")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+(?=[,.:;!?)])")
-
-
-def _tidy_bold(m: re.Match) -> str:
-    inner = m.group(1).strip()
-    return f"**{inner}**" if inner else ""
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+# Метка на месте удалённого эмодзи/ссылки/жирного: по ней видно, какие строки
+# правились (и какие стали пустыми именно из-за чистки). Символ из области
+# частного использования — в тексте постов не встречается.
+_MARK = "\ue000"
 
 
 def strip_emoji(text: str) -> str:
     """Удаляет эмодзи и пиктограммы, сохраняя markdown-разметку, переносы
     строк и обычный текст. Правит только строки, где что-то удалено, — чтобы
-    не трогать пробелы в остальном тексте. Абзац, от которого ничего не
-    осталось ("🔥🔥🔥" отдельным абзацем), выбрасывается; жирный, где был
-    только эмодзи ("**🔥** Заголовок"), исчезает вместе с разметкой."""
+    не трогать пробелы в остальном тексте. Что именно чистится:
+    - ссылка, чей текст целиком из эмодзи ("[👉](url)"), удаляется вместе с
+      адресом: пустую ссылку не понимает ни один парсер, напечатался бы
+      сырой URL; у ссылки с текстом эмодзи просто уходят;
+    - жирный чистится на ВСЁМ тексте, а не построчно: в Telethon-markdown он
+      бывает многострочным, и построчно "** **" на стыке двух спанов
+      принимался бы за пустой жирный. Спан, где остались одни эмодзи
+      ("**🔥** Заголовок"), исчезает вместе с разметкой;
+    - строка, ставшая пустой из-за удаления ("Текст\n🔥\nпродолжение"),
+      выбрасывается, а не рвёт абзац надвое; абзац, от которого ничего не
+      осталось ("🔥🔥🔥" отдельным абзацем), пропадает целиком."""
     if not _EMOJI_RE.search(text):
         return text
+    text = _EMOJI_RE.sub(_MARK, text)
+
+    def link(m: re.Match) -> str:
+        label = m.group(1).replace(_MARK, "").strip()
+        if _MARK not in m.group(0):
+            return m.group(0)
+        return f"{_MARK}[{label}]({m.group(2)})" if label else _MARK
+
+    def bold(m: re.Match) -> str:
+        if _MARK not in m.group(1):
+            return m.group(0)
+        inner = m.group(1).replace(_MARK, "").strip()
+        return f"{_MARK}**{inner}**" if inner else _MARK
+
+    # Ссылки раньше жирного: "**[👉](url)**" должен схлопнуться целиком.
+    text = _BOLD_RE.sub(bold, _LINK_RE.sub(link, text))
     lines = []
     for line in text.split("\n"):
-        if _EMOJI_RE.search(line):
-            line = _EMOJI_RE.sub("", line)
-            line = _EMPTY_BOLD_RE.sub(_tidy_bold, line)
+        if _MARK in line:
+            line = line.replace(_MARK, "")
             line = re.sub(r"[ \t]{2,}", " ", line).strip()
             line = _SPACE_BEFORE_PUNCT_RE.sub("", line)
+            if not line:
+                continue
         lines.append(line)
     paragraphs = [p for p in re.split(r"\n{2,}", "\n".join(lines)) if p.strip()]
     return "\n\n".join(paragraphs)
@@ -856,7 +889,7 @@ def _strip_markdown(text: str) -> str:
     plain-текст, НЕ HTML (экранирование — забота вызывающего кода в месте
     вставки). Общий шаг для запасного пути _split_headline и для коротких
     анонсов _excerpt (тизеры/screamer на титульной полосе)."""
-    plain = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    plain = _LINK_RE.sub(r"\1", text)
     return re.sub(r"[*_`]", "", plain)
 
 
@@ -1165,18 +1198,29 @@ def _importance_order(articles: list[Article]) -> list[Article]:
     return [lead, *sorted(rest, key=lambda a: (-a.importance, a.posted_at))]
 
 
+def _tier_for_rank(rank: int) -> str:
+    """Тир плитки по глобальному рангу значимости (0 — самая значимая):
+    один lead, следующие FEATURE_SLOTS — feature, остальное — brief. Единое
+    место правила: им пользуются и вёрстка (_build_bands), и brief_keys."""
+    return "lead" if rank == 0 else "feature" if rank <= FEATURE_SLOTS else "brief"
+
+
 def brief_keys(
     posts: list[Post], importance_by_key: dict[tuple[str, int], int]
 ) -> set[tuple[str, int]]:
     """Ключи (канал, message_id) постов, которые по правилу тиров станут
-    brief: всё после лида и FEATURE_SLOTS feature в глобальном ранге
-    (_importance_order). Единственное место этого правила для кода вне
-    layout (pipeline сокращает такие тексты заранее); фото не нужны — на
-    ранг они не влияют."""
+    brief по правилу тиров (_tier_for_rank) в глобальном ранге
+    (_importance_order). Для кода вне layout (pipeline сокращает такие
+    тексты заранее) правило не дублируется; фото не нужны — на ранг они не
+    влияют."""
     articles = [
         build_article(p, importance_by_key.get((p.channel, p.message_id), 0)) for p in posts
     ]
-    return {(a.channel, a.post.message_id) for a in _importance_order(articles)[1 + FEATURE_SLOTS :]}
+    return {
+        (a.channel, a.post.message_id)
+        for rank, a in enumerate(_importance_order(articles))
+        if _tier_for_rank(rank) == "brief"
+    }
 
 
 def _plan_sections(
@@ -1257,7 +1301,7 @@ def _build_bands(
     ordered = _importance_order(articles)
     tier_of: dict[int, str] = {}
     for rank, a in enumerate(ordered):
-        tier_of[id(a)] = "lead" if rank == 0 else "feature" if rank <= FEATURE_SLOTS else "brief"
+        tier_of[id(a)] = _tier_for_rank(rank)
 
     sections = _plan_sections(articles, rubric_by_channel, rubric_order)
     bands: list[_Band] = []
@@ -2007,6 +2051,7 @@ def render_pages(
     rubric_by_channel: dict[str, str] | None = None,
     rubric_order: list[str] | None = None,
     videos: list[YoutubeVideo] | None = None,
+    fit_only: bool = False,
 ) -> tuple[list[Path], list[Post]]:
     """Рендерит газету в одну или несколько PNG нужного физического размера
     при заданном DPI. Вьюпорт браузера выставляется в CSS-пикселях под точный
@@ -2092,7 +2137,14 @@ def render_pages(
     разрешённом max_pages листе блок резервируется заранее (tail в
     _fill_sheet), а новости, которым из-за этого не хватило места, уходят в
     leftover — build_newspaper их сократит или выбросит. Нет видео — нет и
-    блока."""
+    блока.
+
+    fit_only — только подгонка: функция возвращает ([], leftover) сразу после
+    раскладки мозаики, не строя афишу (без teaser_provider и LLM), не делая
+    скриншотов и не создавая out_dir — на диск ничего не пишется. Подгонка
+    идёт тем же путём (_fill_sheet в том же контексте браузера), что и при
+    полном рендере, поэтому leftover совпадает. Нужна build_newspaper для
+    промежуточных проб: в каталоге номера не остаётся полос от попыток."""
     run_date = run_date or datetime.now()
     page_w, page_h = PAGE_SIZES_MM[page_size]
     if landscape:
@@ -2160,7 +2212,8 @@ def render_pages(
 
     max_sheets = math.ceil(max_pages / sheet_units) if max_pages is not None else None
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if not fit_only:
+        out_dir.mkdir(parents=True, exist_ok=True)
     out_paths: list[Path] = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -2223,6 +2276,8 @@ def render_pages(
             # осталось, в номер не попадает вообще (см. докстринг). Отдаём
             # исходные Post вызывающему коду вместо рендера лишних листов.
             leftover_posts = [m.post for b in remaining for m in b.members]  # у header/videos members пуст
+            if fit_only:
+                return [], leftover_posts
 
             # Анонсы афиши — из уже РЕАЛЬНО напечатанных (влезших) новостей,
             # в порядке значимости (_build_bands кладёт лид первым), а не из
