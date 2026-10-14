@@ -61,6 +61,7 @@ from tg_newspaper.feedback_html import (
     render_survey_page,
 )
 from tg_newspaper.issue_pdf import build_pdf
+from tg_newspaper.layout import edition_slug, to_local
 from tg_newspaper.pipeline import (
     assemble_issue,
     issue_dir,
@@ -180,8 +181,12 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             logger.exception("не удалось собрать PDF номера #%d", run_id)
             self._send_html(render_error_page(f"Не удалось собрать PDF: {exc}"), status=500)
             return True
-        date = (run.period_end or run.started_at).strftime("%Y-%m-%d")
-        self._send_file(pdf.read_bytes(), "application/pdf", f"tg-newspaper-{date}-{kind}.pdf")
+        moment = run.period_end or run.started_at
+        date = to_local(moment).strftime("%Y-%m-%d")
+        self._send_file(
+            pdf.read_bytes(), "application/pdf",
+            f"tg-newspaper-{date}-{edition_slug(moment)}-{kind}.pdf",
+        )
         return True
 
     def _ready_for_llm(self, config) -> bool:

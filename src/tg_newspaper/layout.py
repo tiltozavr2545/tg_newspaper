@@ -112,18 +112,29 @@ DEFAULT_COLUMNS = 6  # число базовых колонок мозаично
 MASTHEAD_LEFT = "DAILY"
 MASTHEAD_RIGHT = "TIMOHA"
 MASTHEAD_TITLE = f"{MASTHEAD_LEFT} {MASTHEAD_RIGHT}"  # одной строкой — для running-header полос мозаики
-MASTHEAD_EDITION = "Morning edition · Тимоха Пресс"
+MASTHEAD_PUBLISHER = "Тимоха Пресс"
 MASTHEAD_PRICE = "Тираж: 1 экз."
 COVER_RIBBON_TEXT = "Спецвыпуск"  # диагональная лента на кадре главного анонса
 
 # Минимальная оценка photo_relevance (см. classifier.py), при которой пост
 # вообще получает фото — 1 ("не нужно") фото не показывает, даже если оно
-# скачалось. Общий порог и для мозаичных плиток (feature/brief, см.
-# _should_show_photo), и для кадров анонсов на титульной полосе-афише
-# (см. _announce) — там тиров нет вообще, решает только эта оценка.
+# скачалось. Порог кадров анонсов на титульной полосе-афише (см. _announce)
+# — там тиров нет вообще, решает только эта оценка; у мозаики свой, выше
+# (MOSAIC_MIN_PHOTO_RELEVANCE).
 MIN_PHOTO_RELEVANCE_TO_SHOW = 2
-PHOTO_ASPECT_RATIO = 3 / 2  # ширина:высота — тот же кадр, что согласован в мокапе оформления
+# В мозаике порог выше (решение пользователя 2026-10-14: ради числа новостей
+# в номере фото в мозаике только там, где без него теряется смысл — оценка 3):
+# ряд brief-плиток с фото занимал почти целую полосу. Обложка остаётся на
+# MIN_PHOTO_RELEVANCE_TO_SHOW: афиша на вместимость мозаики не влияет, а фото
+# там главный приём. Единственное место порога мозаики — _should_show_photo
+# (им же пользуется оценка высоты _estimate_row_span).
+MOSAIC_MIN_PHOTO_RELEVANCE = 3
+PHOTO_ASPECT_RATIO = 3 / 2  # ширина:высота — тот же кадр, что согласован в мокапе оформления (feature)
 PHOTO_ASPECT_CSS = "3 / 2"  # то же соотношение в синтаксисе CSS aspect-ratio
+# В brief-плитке (треть ширины полосы) кадр ниже: 16:9 вместо 3:2 экономит
+# около 3 row-unit'ов на ряд, а смысл кадра при узкой плитке не страдает.
+BRIEF_PHOTO_ASPECT_RATIO = 16 / 9
+BRIEF_PHOTO_ASPECT_CSS = "16 / 9"
 PHOTO_CAPTION_ROWS = 1  # под подпись-титр под фото хватает одной row-unit'ы
 
 ROW_UNIT_MM = 5.2  # высота одного "кирпичика" мозаичной сетки
@@ -537,6 +548,7 @@ _STYLE_TEMPLATE = """
     filter: grayscale(1) contrast(1.45) brightness(0.94);
   }}
   .card-photo img {{ aspect-ratio: {photo_aspect}; }}
+  .tier-brief .card-photo img {{ aspect-ratio: {brief_photo_aspect}; }}
   /* Кадру ГЛАВНОГО анонса высоту задаёт не соотношение сторон, а остаток
      полосы — он должен заполнять её до низа. Вторичным оставлено
      соотношение 4:3 (чуть выше газетного 3:2, так колонка смотрится
@@ -764,11 +776,18 @@ def _inline_markdown_to_html(escaped_text: str) -> str:
 # больше 4 "слов"), чтобы не задеть абзацы, где ссылка — только часть
 # полноценного предложения.
 _MAX_SIGNATURE_WORDS = 4
+# Рекламный хвост из одних ссылок ("[Канал](…) | [Мы в MAX](…)") — подпись
+# при любом числе слов: после чистки эмодзи (strip_emoji) он остаётся
+# ссылками и разделителями, а слов в нём бывает больше четырёх.
+_LINK_RE = re.compile(r"\[[^\]]+\]\([^)]+\)")
+_LINK_SEPARATORS_RE = re.compile(r"[\s|•·—\-/,]+")
 
 
 def _looks_like_signature(paragraph: str) -> bool:
     if "](" not in paragraph:
         return False
+    if not _LINK_SEPARATORS_RE.sub("", _LINK_RE.sub("", paragraph)):
+        return True
     resolved = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", paragraph)
     return len(resolved.split()) <= _MAX_SIGNATURE_WORDS
 
@@ -778,6 +797,47 @@ def _strip_signature_tail(paragraphs: list[str]) -> list[str]:
     while len(parts) > 1 and _looks_like_signature(parts[-1]):
         parts.pop()
     return parts
+
+
+# Эмодзи и декоративные значки — не печатаем (решение пользователя
+# 2026-10-14). Диапазоны — по Unicode-блокам пиктограмм; обычные стрелки
+# U+2190-21FF, типографика («» — – … № ° ™ • ·) и валюты сюда не входят.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # эмодзи, флаги (региональные индикаторы), модификаторы тона
+    "\u2600-\u27BF\u2B00-\u2BFF\u25A0-\u25FF"  # символы, dingbats, стрелки-значки, геометрия (буллеты)
+    "\u231A\u231B\u23E9-\u23FA\u203C\u2049\u2139\u24C2\u3030\u303D\u3297\u3299"
+    "\U000E0020-\U000E007F"  # теги (подфлаги)
+    "\uFE0E\uFE0F\u200D\u20E3"  # селекторы вариантов, ZWJ, keycap
+    "]"
+)
+_EMPTY_BOLD_RE = re.compile(r"\*\*([^*\n]*)\*\*")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+(?=[,.:;!?)])")
+
+
+def _tidy_bold(m: re.Match) -> str:
+    inner = m.group(1).strip()
+    return f"**{inner}**" if inner else ""
+
+
+def strip_emoji(text: str) -> str:
+    """Удаляет эмодзи и пиктограммы, сохраняя markdown-разметку, переносы
+    строк и обычный текст. Правит только строки, где что-то удалено, — чтобы
+    не трогать пробелы в остальном тексте. Абзац, от которого ничего не
+    осталось ("🔥🔥🔥" отдельным абзацем), выбрасывается; жирный, где был
+    только эмодзи ("**🔥** Заголовок"), исчезает вместе с разметкой."""
+    if not _EMOJI_RE.search(text):
+        return text
+    lines = []
+    for line in text.split("\n"):
+        if _EMOJI_RE.search(line):
+            line = _EMOJI_RE.sub("", line)
+            line = _EMPTY_BOLD_RE.sub(_tidy_bold, line)
+            line = re.sub(r"[ \t]{2,}", " ", line).strip()
+            line = _SPACE_BEFORE_PUNCT_RE.sub("", line)
+        lines.append(line)
+    paragraphs = [p for p in re.split(r"\n{2,}", "\n".join(lines)) if p.strip()]
+    return "\n\n".join(paragraphs)
 
 
 def _paragraphs_html(text: str) -> str:
@@ -834,7 +894,7 @@ def _split_headline(raw_text: str) -> tuple[str, str]:
         prefix = m.group("prefix").strip()
         headline = m.group("headline").strip()
         if prefix:
-            headline = f"{prefix} {headline}"  # эмодзи-префикс перед лидом (частый стиль каналов) — сохраняем в заголовке
+            headline = f"{prefix} {headline}"  # префикс перед лидом (текст, не эмодзи: strip_emoji отработал в build_article) — сохраняем в заголовке
         rest = text[m.end():].strip()
         return headline, rest or headline  # пустое тело после лида — дублируем, чтобы новость не осталась без текста
     # Без ведущего жирного лида берём только первую "строку" поста (до
@@ -923,7 +983,7 @@ def build_article(
     photo_relevance: int = 1,
     photo_path: str | None = None,
 ) -> Article:
-    headline_raw, body_raw = _split_headline(post.text)
+    headline_raw, body_raw = _split_headline(strip_emoji(post.text))
     headline_html = _inline_markdown_to_html(html.escape(headline_raw))
     full_body_html = _paragraphs_html(body_raw)
     return Article(
@@ -952,7 +1012,7 @@ def _should_show_photo(tier: str, article: Article) -> bool:
     return (
         tier in ("feature", "brief")
         and article.photo_data_uri is not None
-        and article.photo_relevance >= MIN_PHOTO_RELEVANCE_TO_SHOW
+        and article.photo_relevance >= MOSAIC_MIN_PHOTO_RELEVANCE
     )
 
 
@@ -980,14 +1040,16 @@ def _text_width_mm(col_span: int, columns: int, page_w: float) -> float:
     return _tile_width_mm(col_span, columns, page_w) - 2 * CARD_PADDING_H_MM
 
 
-def _photo_row_span(col_span: int, columns: int, page_w: float) -> int:
+def _photo_row_span(tier: str, col_span: int, columns: int, page_w: float) -> int:
     """Сколько row-unit'ов займёт фото-врезка (см. _should_show_photo) при
-    заданной ширине плитки — кадр фиксированного соотношения сторон
-    (PHOTO_ASPECT_RATIO) на всю ширину плитки, плюс строка под подпись.
+    заданной ширине плитки — кадр фиксированного соотношения сторон (по
+    тиру: 16:9 у brief, 3:2 у feature) на всю ширину плитки, плюс строка под
+    подпись.
     Только стартовая оценка для _seed_bands — реальную высоту, как и для
     текста, подтверждает браузерный цикл подгонки (_fit_bands)."""
     width_mm = _tile_width_mm(col_span, columns, page_w)
-    height_mm = width_mm / PHOTO_ASPECT_RATIO
+    aspect = BRIEF_PHOTO_ASPECT_RATIO if tier == "brief" else PHOTO_ASPECT_RATIO
+    height_mm = width_mm / aspect
     return math.ceil(height_mm / ROW_UNIT_MM) + PHOTO_CAPTION_ROWS
 
 
@@ -1011,7 +1073,7 @@ def _estimate_row_span(tier: str, col_span: int, columns: int, page_w: float, ar
     body_rows = _rows_for_text(
         article.body_char_count, text_width, TIER_BODY_FONT_MM[tier], TIER_BODY_LINE_HEIGHT
     )
-    photo_rows = _photo_row_span(col_span, columns, page_w) if _should_show_photo(tier, article) else 0
+    photo_rows = _photo_row_span(tier, col_span, columns, page_w) if _should_show_photo(tier, article) else 0
     return ROW_OVERHEAD + photo_rows + headline_rows + body_rows
 
 
@@ -1101,6 +1163,20 @@ def _importance_order(articles: list[Article]) -> list[Article]:
     by_importance = sorted(articles, key=lambda a: (a.importance, a.word_count), reverse=True)
     lead, *rest = by_importance
     return [lead, *sorted(rest, key=lambda a: (-a.importance, a.posted_at))]
+
+
+def brief_keys(
+    posts: list[Post], importance_by_key: dict[tuple[str, int], int]
+) -> set[tuple[str, int]]:
+    """Ключи (канал, message_id) постов, которые по правилу тиров станут
+    brief: всё после лида и FEATURE_SLOTS feature в глобальном ранге
+    (_importance_order). Единственное место этого правила для кода вне
+    layout (pipeline сокращает такие тексты заранее); фото не нужны — на
+    ранг они не влияют."""
+    articles = [
+        build_article(p, importance_by_key.get((p.channel, p.message_id), 0)) for p in posts
+    ]
+    return {(a.channel, a.post.message_id) for a in _importance_order(articles)[1 + FEATURE_SLOTS :]}
 
 
 def _plan_sections(
@@ -1200,13 +1276,49 @@ def _build_bands(
     return bands
 
 
+def to_local(moment: datetime) -> datetime:
+    """Момент во времени в часовом поясе системы, на которой идёт вёрстка.
+    В БД всё хранится в UTC (aware), пользователю показываем локальное;
+    naive считается уже локальным (`datetime.now()`)."""
+    return moment.astimezone() if moment.tzinfo else moment
+
+
+# Название выпуска по локальному часу прогона: (час начала, slug, название).
+# Обычное русское деление суток: утро 5–12, день 12–17, вечер 17–23, ночь 23–5.
+_EDITIONS = (
+    (5, "morning", "Morning edition"),
+    (12, "afternoon", "Afternoon edition"),
+    (17, "evening", "Evening edition"),
+    (23, "night", "Night edition"),
+)
+
+
+def _edition(run_date: datetime) -> tuple[str, str]:
+    hour = to_local(run_date).hour
+    slug, name = _EDITIONS[-1][1:]  # до 05:00 — всё ещё ночной выпуск
+    for start, s, n in _EDITIONS:
+        if hour >= start:
+            slug, name = s, n
+    return slug, name
+
+
+def edition_name(run_date: datetime) -> str:
+    """Название выпуска для строки под плашкой обложки («Evening edition»)."""
+    return _edition(run_date)[1]
+
+
+def edition_slug(run_date: datetime) -> str:
+    """Короткий slug выпуска для имени файла (`evening`)."""
+    return _edition(run_date)[0]
+
+
 # --- Блок "Новые видео" --------------------------------------------------
 
 def _video_time_label(published_at: datetime, run_date: datetime) -> str:
     """Локальное ЧЧ:ММ; не сегодня относительно run_date — "вчера ЧЧ:ММ"
     (или дата, если дальше: прогон за произвольное окно)."""
     local = published_at.astimezone()
-    rd = run_date.astimezone() if run_date.tzinfo else run_date
+    rd = to_local(run_date)
     days = (rd.date() - local.date()).days
     clock = local.strftime("%H:%M")
     if days <= 0:
@@ -1226,7 +1338,7 @@ def _video_card_html(video: YoutubeVideo, run_date: datetime) -> str:
         '<div class="video-card">'
         f'<div class="video-thumb">{thumb}</div>'
         '<div class="video-info">'
-        f'<div class="video-title">{html.escape(video.title)}</div>'
+        f'<div class="video-title">{html.escape(strip_emoji(video.title))}</div>'
         f'<div class="video-meta">{html.escape(video.channel_title)} · {when}</div>'
         f'<div class="video-link">youtu.be/{html.escape(video.video_id)}</div>'
         "</div></div>"
@@ -1626,6 +1738,7 @@ def _page_html(
     page_num: int,
     total_pages: int,
     date_label: str,
+    edition: str,
 ) -> str:
     """Лист мозаики (feature/brief) — лид сюда не входит, у него отдельная
     титульная полоса (_cover_page_html). Все листы мозаики одинаковы: без
@@ -1635,7 +1748,7 @@ def _page_html(
 
     header_html = f"""
     <div class="running-header">
-      <strong>{MASTHEAD_TITLE}</strong> · {date_label} · стр. {page_num} из {total_pages}
+      <strong>{MASTHEAD_TITLE}</strong> · {date_label} · {edition} · стр. {page_num} из {total_pages}
     </div>"""
 
     return f"""
@@ -1701,8 +1814,8 @@ def _announce(
     нельзя."""
     key = (article.channel, article.post.message_id)
     llm_screamer, llm_kicker = teasers.get(key, ("", ""))
-    screamer = _excerpt(llm_screamer or article.headline_raw, screamer_max_chars)
-    kicker = _excerpt(llm_kicker or article.headline_raw, KICKER_MAX_CHARS)
+    screamer = _excerpt(strip_emoji(llm_screamer) or article.headline_raw, screamer_max_chars)
+    kicker = _excerpt(strip_emoji(llm_kicker) or article.headline_raw, KICKER_MAX_CHARS)
     photo = (
         article.photo_data_uri
         if article.photo_relevance >= MIN_PHOTO_RELEVANCE_TO_SHOW
@@ -1809,6 +1922,7 @@ def _cover_page_html(
     tertiary: list[Article],
     fallback_list: list[Article],
     date_label: str,
+    edition: str,
     issue_number: int,
     total_pages: int,
     main_photo_mm: float,
@@ -1856,7 +1970,7 @@ def _cover_page_html(
       <span class="plate-word">{MASTHEAD_RIGHT}</span>
     </div>
     <div class="masthead-strip">
-      <span>{MASTHEAD_EDITION} · выпуск № {issue_number}</span>
+      <span>{edition} · {MASTHEAD_PUBLISHER} · выпуск № {issue_number}</span>
       <span class="edition-date">{date_label}</span>
       <span>{MASTHEAD_PRICE}</span>
     </div>
@@ -2026,13 +2140,15 @@ def render_pages(
         row_unit=ROW_UNIT_MM,
         lead_col=columns,
         photo_aspect=PHOTO_ASPECT_CSS,
+        brief_photo_aspect=BRIEF_PHOTO_ASPECT_CSS,
         video_pad=VIDEO_BLOCK_PAD_V_MM,
         video_cols=VIDEO_COLUMNS,
         video_gap=VIDEO_GRID_GAP_MM,
         video_card_h=VIDEO_CARD_H_MM,
         video_thumb_w=VIDEO_THUMB_W_MM,
     )
-    date_label = run_date.strftime("%d.%m.%Y")
+    date_label = to_local(run_date).strftime("%d.%m.%Y")
+    edition = edition_name(run_date)
 
     def wrap(fragment: str) -> str:
         return f'<!doctype html><html lang="ru"><head><meta charset="utf-8">{style}</head><body>{fragment}</body></html>'
@@ -2079,7 +2195,7 @@ def render_pages(
                     # .mosaic, которую измеряет _fit_bands, они не влияют —
                     # у running-header фиксированная высота
                     # (RUNNING_HEADER_BLOCK_MM) независимо от текста в ней.
-                    return wrap(_page_html(queue, placements, 2, 2, date_label))
+                    return wrap(_page_html(queue, placements, 2, 2, date_label, edition))
 
                 candidates_count = len(remaining)
                 # Последний разрешённый лист: блок видео резервируется заранее.
@@ -2175,11 +2291,11 @@ def render_pages(
             cover_html = _cover_page_html(
                 main_announce, secondary_announces, teaser_top, teaser_bottom,
                 tertiary_articles, fallback_list,
-                date_label, issue_number, total_pages, main_photo_mm, secondary_photo_mm,
+                date_label, edition, issue_number, total_pages, main_photo_mm, secondary_photo_mm,
                 secondary_column_mm, main_block_mm, content_w,
             )
             mosaic_html = "\n".join(
-                _page_html(sheet_bands, placements, i + 2, total_pages, date_label)
+                _page_html(sheet_bands, placements, i + 2, total_pages, date_label, edition)
                 for i, sheet_bands in enumerate(sheets)
             )
             all_sheets_html = cover_html + "\n" + mosaic_html

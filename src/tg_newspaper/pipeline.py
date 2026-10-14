@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +23,7 @@ from .config import Config
 from .dedup import find_copypaste_clusters
 from .filtering import filter_posts
 from .history_dedup import HISTORY_RUNS_WINDOW, filter_against_history
-from .layout import render_pages
+from .layout import brief_keys, render_pages
 from .paraphrase_dedup import GeminiEmbedder, find_paraphrase_clusters
 from .personalization import (
     ReaderContext,
@@ -474,14 +476,31 @@ def load_run(conn: sqlite3.Connection, run_id: int) -> list[PostOutcome]:
 
 # Печатная газета — фиксированный номер, не бесконечная лента (Этап 3, по
 # итогам ревью пользователя: "четыре листа А4, повёрнутые горизонтально").
-NEWSPAPER_MAX_PAGES = 4
+# Лимит полос МОЗАИКИ (обложка — ещё 2 полосы сверх него; один лист A3 =
+# SHEET_UNITS = 2 полосы). Решение пользователя 2026-10-14: 4 → 6, то есть
+# +1 лист A3 — на реальном прогоне 4 полос не хватало и выбрасывалось слишком
+# много значимого.
+NEWSPAPER_MAX_PAGES = 6
 # Не пытаемся сократить нейронкой то, что и так значимо ниже среднего —
 # такое просто выбрасывается из номера, если не влезло.
 IMPORTANCE_DROP_THRESHOLD = 2
+# Меньше стольких новостей, прошедших в печать, номер не собираем: столько
+# анонсов нужно, чтобы заполнить титульную полосу-афишу (1 главный +
+# COVER_SECONDARY_COUNT + COVER_TERTIARY_COUNT в layout.py); меньше — признак
+# сбоя сбора или пустых суток, а не номер, который стоит печатать. На Этапе 8
+# порог станет настраиваемым.
+MIN_ISSUE_NEWS = 8
 SHORTEN_TARGET_SENTENCES = 3
 # Короче этого сокращать почти нечего — смысла звать LLM нет, такой пост
 # либо влезает как есть, либо выбрасывается наравне с неважными.
 SHORTEN_MIN_CHARS = 400
+# Будущие brief-плитки длиннее этого сокращаются заранее, до первой вёрстки,
+# независимо от значимости (решение пользователя 2026-10-14: максимум новостей
+# в номере). Brief — треть ширины полосы (~80 мм текста, ~3.5 символа на мм
+# при кегле 2.9 мм), а высоту ряда из трёх плиток задаёт самая длинная из
+# них: 600 знаков ≈ 8 строк по ~50 знаков ≈ 8*2.9*1.4*1.1/5.2 ≈ 7 row-unit'ов
+# (+ заголовок), тогда как 1200+ знаков дают 20-38 row-unit'ов из ~74 на лист.
+BRIEF_SHORTEN_MIN_CHARS = 600
 
 
 @dataclass(frozen=True)
@@ -495,6 +514,13 @@ class NewspaperResult:
     # сохраняется как состав номера (save_newspaper_issue) и служит историей
     # для дедупа следующих прогонов.
     published: list[Post]
+
+
+def _significance_key(importance_by_key: dict[Key, int]) -> Callable[[Post], tuple[int, datetime, int]]:
+    """Ключ порядка значимости: по возрастанию — от наименее значимой новости
+    к наиболее (оценка, при равенстве более старые, затем более короткие).
+    Единое место для выбора, что оставлять в номере при нехватке места."""
+    return lambda p: (importance_by_key.get(_key(p), 0), p.posted_at, len(p.text))
 
 
 def build_newspaper(
@@ -512,22 +538,29 @@ def build_newspaper(
     Раскладка — по итоговой оценке значимости (effective_importance: смесь
     generic importance из classifier.py и персональной оценки; у старых
     прогонов — generic): самое важное печатается в первую очередь
-    и получает более крупную плитку (см. layout._build_bands). То, что не
-    поместилось в отведённый объём:
+    и получает более крупную плитку (см. layout._build_bands). Перед первой
+    вёрсткой тексты длиннее BRIEF_SHORTEN_MIN_CHARS у постов, которые по
+    правилу тиров станут brief (layout.brief_keys), сокращаются нейронкой
+    сразу, независимо от значимости: высоту ряда задаёт самая длинная
+    плитка, а сокращение leftover уже стоящих на листе плиток не касается.
+    То, что не поместилось в отведённый объём:
     - если оно достаточно значимо (оценка > IMPORTANCE_DROP_THRESHOLD)
       и достаточно длинное, чтобы сокращение было осмысленным — сокращается
       нейронкой (GeminiClassifier.shorten) и полоса собирается заново;
-    - иначе — выбрасывается из номера целиком. Выбрасываются НЕ сами
-      leftover, а столько же новостей с наименьшей значимостью по всему
-      номеру: с рубриками (секциями) "не влезло" — это хвост последней
-      секции, а не самое неважное.
+    - если сокращать больше нечего — бинарным поиском берётся наибольшее
+      число k самых значимых новостей ВСЕГО номера, которое помещается
+      целиком; остальные выбрасываются. Выбор идёт по значимости по всему
+      номеру, а не по leftover: с рубриками (секциями) "не влезло" — это
+      хвост последней секции, а не самое неважное. Поиск вместо выброса
+      len(leftover) одним махом: после такого выброса освобождалось
+      намного больше места, чем нужно, и последние полосы оставались пустыми.
 
     videos — блок "Новые видео" в конце последнего листа (layout.render_pages):
     место под него резервируется, поэтому новости его не вытесняют.
 
     Каждая попытка — полный проход layout.render_pages с нуля (не только
     "довёрстка" последней полосы): дешевле по коду и, поскольку номер
-    ограничен четырьмя полосами, достаточно быстро на практике."""
+    ограничен несколькими полосами, достаточно быстро на практике."""
     included = [o for o in outcomes if o.included]
     if not included:
         return NewspaperResult([], [], 0, [])
@@ -559,6 +592,21 @@ def build_newspaper(
                 classifier = GeminiClassifier(config)
             teaser_cache.update(classifier.teasers(missing))
         return {_key(p): teaser_cache[_key(p)] for p in cover_posts if _key(p) in teaser_cache}
+
+    # Заранее сокращаем длинные тексты будущих brief-плиток: иначе одна такая
+    # плитка раздувает весь ряд, а сокращение leftover её не касается —
+    # она уже стоит на листе. Лид и feature не трогаем: им длинный текст к лицу.
+    brief = brief_keys(posts, importance_by_key)
+    to_prepare = [p for p in posts if _key(p) in brief and len(p.text) > BRIEF_SHORTEN_MIN_CHARS]
+    if to_prepare:
+        classifier = GeminiClassifier(config)
+        prepared = classifier.shorten(to_prepare, target_sentences=SHORTEN_TARGET_SENTENCES)
+        already_shortened.update(_key(p) for p in to_prepare)
+        shortened_count += len(prepared)
+        logger.info(
+            "заранее сокращено нейронкой %d из %d длинных brief-новостей", len(prepared), len(to_prepare)
+        )
+        posts = [replace(p, text=prepared[_key(p)]) if _key(p) in prepared else p for p in posts]
 
     while True:
         out_paths, leftover = render_pages(
@@ -603,18 +651,70 @@ def build_newspaper(
             continue
 
         # Сокращать больше нечего (недостаточно значимо или уже пробовали) —
-        # из номера выбрасывается столько же новостей, сколько не влезло, но
-        # наименее значимых по ВСЕМУ номеру (при равенстве — более старые,
-        # затем более короткие). Posts строго убывает, цикл сходится.
-        victims = sorted(
-            posts,
-            key=lambda p: (importance_by_key.get(_key(p), 0), p.posted_at, len(p.text)),
-        )[: len(leftover)]
-        dropped.extend(victims)
-        victim_keys = {_key(p) for p in victims}
-        posts = [p for p in posts if _key(p) not in victim_keys]
-        if not posts:
-            return NewspaperResult(out_paths, dropped, shortened_count, [])
+        # ищем наибольшее k, при котором k самых значимых новостей номера
+        # помещаются целиком. Инвариант: lo помещается (k=1 помещается
+        # всегда — это гарантирует layout._fit_bands), hi — нет (текущее
+        # число постов). Монотонность не строгая (с выбросом меняются тиры
+        # плиток), поэтому годится только k, реально отрендеренное без
+        # leftover; ответ — лучшее из них.
+        by_significance = sorted(posts, key=_significance_key(importance_by_key), reverse=True)
+
+        def top(k: int) -> list[Post]:
+            keep = {_key(p) for p in by_significance[:k]}
+            return [p for p in posts if _key(p) in keep]  # исходный порядок постов
+
+        probes = 0
+        lo, hi = 1, len(posts)
+        # Пробы идут во временный каталог, а не в out_dir: проба с большим
+        # числом полос оставила бы там лишние page_N.png, которые не вычистит
+        # assemble_issue (он чистит каталог только до build_newspaper). Финал
+        # рендерится в out_dir один раз. Без teaser_provider: обложка не
+        # влияет на подгонку мозаики, а пробам незачем ходить в LLM.
+        with tempfile.TemporaryDirectory() as tmp:
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                probes += 1
+                _, probe_leftover = render_pages(
+                    top(mid), Path(tmp), basename=basename, run_date=run_date,
+                    page_size="A4", landscape=True, max_pages=max_pages,
+                    importance_by_key=importance_by_key,
+                    photo_relevance_by_key=photo_relevance_by_key,
+                    photo_path_by_key=photo_path_by_key,
+                    teaser_provider=None,
+                    rubric_by_channel=config.rubric_by_channel,
+                    rubric_order=config.rubric_order,
+                    videos=videos,
+                )
+                if probe_leftover:
+                    hi = mid
+                else:
+                    lo = mid
+
+        # Финал — с анонсами. Если вдруг k=lo не влез (k=1 не пробовали, а
+        # гарантия вёрстки нарушена) — страхуемся, уменьшая k.
+        while True:
+            chosen = top(lo)
+            out_paths, leftover = render_pages(
+                chosen, out_dir, basename=basename, run_date=run_date,
+                page_size="A4", landscape=True, max_pages=max_pages,
+                importance_by_key=importance_by_key,
+                photo_relevance_by_key=photo_relevance_by_key,
+                photo_path_by_key=photo_path_by_key,
+                teaser_provider=teaser_provider,
+                rubric_by_channel=config.rubric_by_channel,
+                rubric_order=config.rubric_order,
+                videos=videos,
+            )
+            if not leftover or lo <= 1:
+                break
+            lo -= 1
+        chosen_keys = {_key(p) for p in chosen}
+        dropped.extend(p for p in posts if _key(p) not in chosen_keys)
+        logger.info(
+            "номер собран: %d стр., сокращено=%d, выброшено из-за нехватки места=%d, пробных рендеров=%d",
+            len(out_paths), shortened_count, len(dropped), probes,
+        )
+        return NewspaperResult(out_paths, dropped, shortened_count, chosen)
 
 
 def save_newspaper_issue(conn: sqlite3.Connection, run_id: int, result: NewspaperResult) -> None:
@@ -646,6 +746,19 @@ def issue_pages(config: Config, run_id: int) -> list[Path]:
     return [p for _, p in sorted(found)]
 
 
+def enough_news_for_issue(included_count: int) -> bool:
+    """Хватает ли прошедших в печать новостей (`included`) на номер."""
+    return included_count >= MIN_ISSUE_NEWS
+
+
+def few_news_message(included_count: int) -> str:
+    """Сообщение пользователю, когда номер не собран из-за нехватки новостей."""
+    return (
+        f"За сутки набралось мало новостей: {included_count} "
+        f"(нужно хотя бы {MIN_ISSUE_NEWS}) — номер не собран."
+    )
+
+
 def assemble_issue(
     config: Config,
     conn: sqlite3.Connection,
@@ -654,9 +767,10 @@ def assemble_issue(
 ) -> NewspaperResult | None:
     """Собирает номер по сохранённому прогону и фиксирует его состав для
     дедупа. Единая точка для кнопки консоли, CLI и render_preview.py.
-    None — в прогоне нет ни одной новости для газеты."""
+    None — новостей, прошедших в печать, меньше MIN_ISSUE_NEWS: номер не
+    собирается, старые полосы и состав в БД остаются как были."""
     outcomes = load_run(conn, run.run_id)
-    if not any(o.included for o in outcomes):
+    if not enough_news_for_issue(sum(1 for o in outcomes if o.included)):
         return None
     videos = load_run_videos(conn, run.run_id)
 

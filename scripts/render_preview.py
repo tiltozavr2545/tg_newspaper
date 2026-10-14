@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 
 from tg_newspaper.config import load_config
-from tg_newspaper.pipeline import NEWSPAPER_MAX_PAGES, assemble_issue, load_run
+from tg_newspaper.pipeline import NEWSPAPER_MAX_PAGES, assemble_issue, few_news_message, load_run
 from tg_newspaper.storage import connect, list_runs
 
 
@@ -47,7 +47,7 @@ def main() -> None:
     included_count = sum(1 for o in load_run(conn, run.run_id) if o.included)
     result = assemble_issue(config, conn, run, max_pages=args.pages)
     if result is None:
-        raise SystemExit(f"прогон #{run.run_id} не дал ни одной новости для газеты")
+        raise SystemExit(f"прогон #{run.run_id}: {few_news_message(included_count)}")
     pages_list = "\n".join(f"  {p}" for p in result.pages)
     print(
         f"Прогон #{run.run_id}: {included_count} новостей → {len(result.pages)} полос(ы) "

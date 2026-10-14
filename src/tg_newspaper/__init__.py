@@ -11,7 +11,8 @@ tg_newspaper.pipeline, что и у кнопки: раздельной логи�
 import logging
 
 from .config import load_config
-from .pipeline import assemble_issue, issue_dir, run_pipeline_for_last_24h
+from .layout import to_local
+from .pipeline import assemble_issue, few_news_message, issue_dir, run_pipeline_for_last_24h
 from .storage import connect, list_runs
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ def main() -> None:
     included = [o for o in result.outcomes if o.included]
     excluded = [o for o in result.outcomes if not o.included]
 
-    print(f"\nОкно сбора: {result.period_start.isoformat()} — {result.period_end.isoformat()}")
+    fmt = "%Y-%m-%d %H:%M"
+    print(f"\nОкно сбора: {to_local(result.period_start).strftime(fmt)} — {to_local(result.period_end).strftime(fmt)}")
     print(f"Всего постов: {len(result.outcomes)}")
     print(f"Пошли в газету: {len(included)}")
     print(f"Отсеяны: {len(excluded)}")
@@ -61,6 +63,6 @@ def main() -> None:
         )
         return
     if issue is None:
-        print("\nВ номер нечего ставить — ни одной новости не прошло отбор.")
+        print(f"\n{few_news_message(len(included))}")
         return
     print(f"\nНомер: {len(issue.pages)} полос → {issue_dir(config, result.run_id)}")

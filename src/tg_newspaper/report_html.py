@@ -16,7 +16,8 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .config import HOME_ENV, REPO_ROOT
 from .feedback import LearningStats
-from .pipeline import PostOutcome
+from .layout import to_local
+from .pipeline import PostOutcome, enough_news_for_issue, few_news_message
 from .storage import Run
 from .youtube import YoutubeVideo
 
@@ -197,7 +198,7 @@ def _score_cell(outcome: PostOutcome) -> str:
 def _nav_html(runs: list[Run], current_run_id: int | None) -> str:
     items = []
     for run in runs[:NAV_RUNS_LIMIT]:
-        label = run.started_at.strftime("%Y-%m-%d %H:%M")
+        label = to_local(run.started_at).strftime("%Y-%m-%d %H:%M")
         if run.run_id == current_run_id:
             items.append(f'<span class="current">{label}</span>')
         else:
@@ -211,8 +212,8 @@ def _period_html(period_start: datetime | None, period_end: datetime | None) -> 
         return ""
     fmt = "%Y-%m-%d %H:%M"
     return (
-        f'<p class="subtitle">Окно сбора: {period_start.strftime(fmt)} — '
-        f'{period_end.strftime(fmt)} (последние сутки от запуска).</p>'
+        f'<p class="subtitle">Окно сбора: {to_local(period_start).strftime(fmt)} — '
+        f'{to_local(period_end).strftime(fmt)} (последние сутки от запуска).</p>'
     )
 
 
@@ -261,12 +262,12 @@ def _issue_html(run_id: int, included: int, page_count: int, render_error: str |
       {_render_form_html(run_id, "Пересобрать номер", secondary=True)}
     </div>
     <div class="issue-pages">{previews}</div>"""
-    elif included:
+    elif enough_news_for_issue(included):
         body = f"""
     <p class="issue-empty">Номер ещё не свёрстан.</p>
     <div class="issue-actions">{_render_form_html(run_id, "Свёрстать номер")}</div>"""
     else:
-        body = '<p class="issue-empty">В номер нечего ставить.</p>'
+        body = f'<p class="issue-empty">{html.escape(few_news_message(included))}</p>'
     return f'''<div class="issue-box">
     <h2>Номер</h2>
     {error_html}{body}
@@ -310,11 +311,11 @@ def render_run_page(
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>TG Newspaper — прогон {run_started_at.strftime("%Y-%m-%d %H:%M")}</title>
+<title>TG Newspaper — прогон {to_local(run_started_at).strftime("%Y-%m-%d %H:%M")}</title>
 {STYLE}
 </head>
 <body>
-  <h1>Прогон {run_started_at.strftime("%Y-%m-%d %H:%M")}</h1>
+  <h1>Прогон {to_local(run_started_at).strftime("%Y-%m-%d %H:%M")}</h1>
   <p class="subtitle">Эвристики → копипаст-дедуп → LLM-классификация → дедуп пересказов.</p>
   {_period_html(period_start, period_end)}
 
@@ -434,7 +435,7 @@ def render_index_page(
         )
     else:
         items = "\n".join(
-            f'<li><a href="{run_page_filename(run.run_id)}">{run.started_at.strftime("%Y-%m-%d %H:%M")}</a></li>'
+            f'<li><a href="{run_page_filename(run.run_id)}">{to_local(run.started_at).strftime("%Y-%m-%d %H:%M")}</a></li>'
             for run in runs
         )
         list_html = f'<ul class="runs-list">{items}</ul>'
