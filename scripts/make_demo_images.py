@@ -4,7 +4,7 @@
 их класть нельзя. Здесь пайплайн вёрстки (layout.render_pages) запускается на
 синтетических постах без Telegram и Gemini: анонсы обложки — заглушка, «фото» —
 нарисованные SVG-картинки. Результат: docs/images/demo-cover.png, demo-page.png
-(дальше вручную уменьшаются: sips -Z 1400).
+(обе — склейки двух полос A4 в один лист A3, шириной 1400 px).
 
 Запуск: uv run python scripts/make_demo_images.py
 """
@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -167,7 +166,8 @@ def main() -> None:
             importance[key] = imp
             if scene:
                 photo_path[key] = photos[scene]
-                relevance[key] = 3 if imp == 5 else 2
+                # В мозаике фото печатается только при relevance 3: ставим его там, где кадр важен по смыслу.
+                relevance[key] = 3 if imp == 5 or scene in ("robot", "birds", "cinema") else 2
 
         def fake_teasers(ps):
             # Заглушка вместо Gemini: выдуманные «крикливые» анонсы.
@@ -186,9 +186,8 @@ def main() -> None:
         OUT.mkdir(parents=True, exist_ok=True)
         # Обложка — склеенный лист из двух полос: сшиваем их обратно в одну картинку.
         stack(pages[0], pages[1], OUT / "demo-cover.png")
-        # Полоса мозаики — в той же ширине, что обложка: README не нужен 300 dpi.
-        subprocess.run(["sips", "-Z", "1400", str(pages[2]), "--out", str(OUT / "demo-page.png")],
-                       check=True, capture_output=True)
+        # Лист мозаики — тоже склеенный из двух полос (ряды переходят через шов), в той же ширине, что обложка.
+        stack(pages[2], pages[3], OUT / "demo-page.png")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
