@@ -10,6 +10,15 @@ Stages 0-3 and 7 are implemented (channel history collection, filtering and dedu
 | implementation stages | [docs/implementation-plan.md](docs/implementation-plan.md) |
 | deferred items, open questions | [docs/future-development.md](docs/future-development.md) |
 
+## Working conventions
+
+- **Write all repo-facing text in English**: commit messages, docs,
+  code comments/docstrings, and GitHub release bodies. Exception: the
+  local console's own HTML/UI text, CLI/log output the owner reads
+  while running the app, and the Gemini prompts/system instructions —
+  translating those would change real behavior, not just internal
+  language, so they stay in Russian.
+
 ## Known constraints, fixed before development started
 
 - **Launch is button-triggered from the local console, not scheduled.** There's no wake alarm for the PC, no auto-start, and no auto-shutdown when done. The user opens the console themselves (`uv run python scripts/console.py`) and presses "Assemble newspaper" whenever they want; the same run is also available from the terminal (`uv run tg-newspaper`) for a headless run without a browser. The collection window is always a fixed last 24 hours **from the moment the button is pressed**, not "since the last successful run" — catching up on missed runs is deliberately not implemented; every run simply takes its own last 24 hours.
