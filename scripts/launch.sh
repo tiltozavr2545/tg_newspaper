@@ -1,36 +1,36 @@
 #!/bin/bash
-# Запуск консоли "одной кнопкой": поднимает scripts/console.py в фоне без окна
-# Терминала и открывает её в браузере. Это единственное место с логикой запуска
-# для macOS — приложение "TG Newspaper.app" (scripts/make_app.sh для разработки,
-# scripts/build_release_mac.sh для релиза) лишь вызывает этот скрипт.
+# "One-button" console launch: starts scripts/console.py in the background without a
+# Terminal window and opens it in the browser. This is the single place with the launch logic
+# for macOS — the "TG Newspaper.app" application (scripts/make_app.sh for development,
+# scripts/build_release_mac.sh for release) just calls this script.
 #
-# Два режима:
-#   разработка (TG_NEWSPAPER_HOME не задан) — всё лежит в репозитории: .venv,
-#     data/, .env; зависимости через `uv sync`/`uv run`, uv должен быть установлен.
-#   релиз (TG_NEWSPAPER_HOME задан приложением из dmg) — данные и окружение в
-#     каталоге пользователя, сам скрипт лежит в бандле приложения, который
-#     заменяется при обновлении. uv при необходимости ставится сам, пока идёт
-#     подготовка — открыта страница ожидания.
+# Two modes:
+#   development (TG_NEWSPAPER_HOME not set) — everything lives in the repo: .venv,
+#     data/, .env; dependencies via `uv sync`/`uv run`, uv must be installed.
+#   release (TG_NEWSPAPER_HOME set by the app from the dmg) — data and the environment live in
+#     the user's directory, the script itself lives in the app bundle, which
+#     gets replaced on update. uv installs itself if needed while
+#     preparation is underway — a waiting page is shown.
 #
-# Переменные окружения (нужны для проверки, в обычной работе не задаются):
-#   TG_NEWSPAPER_PORT     — порт консоли (по умолчанию 8420)
-#   TG_NEWSPAPER_RUN_DIR  — где лежат console.log и console.pid (по умолчанию
-#                           каталог БД из TG_NEWSPAPER_DB, иначе <данные>/data)
-#   TG_NEWSPAPER_NO_OPEN  — не открывать браузер, только напечатать URL
-#   TG_NEWSPAPER_DB       — путь к БД (пробрасывается в консоль как есть)
-#   TG_NEWSPAPER_HOME     — каталог данных пользователя (включает релизный режим)
+# Environment variables (needed for testing; not set during normal use):
+#   TG_NEWSPAPER_PORT     — console port (default 8420)
+#   TG_NEWSPAPER_RUN_DIR  — where console.log and console.pid live (default:
+#                           the DB directory from TG_NEWSPAPER_DB, otherwise <data>/data)
+#   TG_NEWSPAPER_NO_OPEN  — don't open the browser, just print the URL
+#   TG_NEWSPAPER_DB       — path to the DB (passed through to the console as-is)
+#   TG_NEWSPAPER_HOME     — user data directory (also enables release mode)
 
 set -u
 
-# Windows по умолчанию пишет stdout в файл в cp1251 — кириллица/эмодзи в логах
-# роняют процесс; на macOS безвредно, но держим одинаково с лаунчером Windows.
+# Windows by default writes stdout to a file as cp1251 — Cyrillic/emoji in logs
+# crash the process; harmless on macOS, but we keep it consistent with the Windows launcher.
 export PYTHONUTF8=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${TG_NEWSPAPER_PORT:-8420}"
 URL="http://localhost:${PORT}/"
-# Проверки доступности — на 127.0.0.1: на Windows/некоторых системах localhost сначала
-# резолвится в IPv6 (::1), а консоль слушает только IPv4. В браузер открываем $URL.
+# Availability checks go against 127.0.0.1: on Windows/some systems localhost first
+# resolves to IPv6 (::1), while the console listens only on IPv4. We open $URL in the browser.
 PROBE_URL="http://127.0.0.1:${PORT}/"
 
 RELEASE=""
@@ -39,8 +39,8 @@ if [ -n "${TG_NEWSPAPER_HOME:-}" ]; then
     RELEASE=1
     HOME_DIR="$TG_NEWSPAPER_HOME"
     export TG_NEWSPAPER_HOME
-    # Окружение вне бандла: его путь может меняться (App Translocation), а venv
-    # должен переживать обновление приложения.
+    # Environment outside the bundle: its path can change (App Translocation), and the venv
+    # must survive an app update.
     export UV_PROJECT_ENVIRONMENT="$HOME_DIR/venv"
 fi
 
@@ -58,11 +58,11 @@ LOG="$RUN_DIR/console.log"
 PID_FILE="$RUN_DIR/console.pid"
 SETUP_LOG="$RUN_DIR/setup.log"
 
-# Диалог через argv, а не подстановкой в строку AppleScript: в логе бывают
-# кавычки и обратные слэши, они бы сломали скрипт.
+# Dialog via argv, not by substituting into the AppleScript string: the log can contain
+# quotes and backslashes that would break the script.
 dialog() {
-    # В тестах/CI (NO_OPEN, CI) диалог некому закрыть - он бы завис навсегда,
-    # поэтому только stderr. Для людей диалог сам закрывается через 10 минут.
+    # In tests/CI (NO_OPEN, CI) there's no one to close the dialog - it would hang forever,
+    # so stderr only. For humans the dialog closes itself after 10 minutes.
     if [ -n "${TG_NEWSPAPER_NO_OPEN:-}" ] || [ -n "${CI:-}" ]; then
         echo "$1" >&2
         return 0
@@ -88,7 +88,7 @@ is_up() {
     curl -s -o /dev/null "$PROBE_URL"
 }
 
-# Повторный клик по иконке: консоль уже работает — просто открываем вкладку.
+# Repeat click on the icon: the console is already running — just open a tab.
 if is_up; then
     open_url
     exit 0
@@ -96,7 +96,7 @@ fi
 
 mkdir -p "$RUN_DIR"
 
-# Finder-приложения не получают PATH из .zshrc, поэтому uv ищем и по обычным местам.
+# Finder-launched apps don't get PATH from .zshrc, so we also look for uv in the usual places.
 UV="$(command -v uv || true)"
 if [ -z "$UV" ]; then
     for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv ${HOME_DIR:+"$HOME_DIR/uv/uv"}; do
@@ -110,8 +110,8 @@ fi
 PREPARING_OPENED=""
 if [ -n "$RELEASE" ]; then
     PY="$UV_PROJECT_ENVIRONMENT/bin/python"
-    # Подготовка "реально нужна", если нет окружения или Chromium: тогда
-    # открываем страницу ожидания сразу, не заставляя смотреть на пустой экран.
+    # Preparation is "actually needed" if there's no environment or no Chromium: in that case
+    # we open the waiting page right away, instead of making the user stare at a blank screen.
     need_prepare=""
     BUILD_ID=""
     [ -f "$ROOT/BUILD_ID" ] && BUILD_ID="$(cat "$ROOT/BUILD_ID")"
@@ -119,7 +119,7 @@ if [ -n "$RELEASE" ]; then
     if [ ! -x "$PY" ]; then
         need_prepare=1
     elif [ -z "$BUILD_ID" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$BUILD_ID" ]; then
-        # Другая сборка (обновление приложения) или BUILD_ID нет (dev-сборка) — синхронизируем.
+        # A different build (app update) or no BUILD_ID (dev build) — sync.
         need_prepare=1
     elif ! "$PY" -c 'import os, sys
 from playwright.sync_api import sync_playwright
@@ -129,22 +129,22 @@ with sync_playwright() as p:
     fi
 
     if [ -z "$need_prepare" ]; then
-        # Уже подготовлено этой же сборкой: uv не нужен вообще (работает офлайн,
-        # даже если uv удалён), сразу стартуем консоль.
-        echo "подготовка не нужна" >"$SETUP_LOG"
+        # Already prepared by this same build: uv isn't needed at all (works offline,
+        # even if uv was removed), start the console right away.
+        echo "preparation not needed" >"$SETUP_LOG"
     else
         : >"$SETUP_LOG"
         if [ -z "${TG_NEWSPAPER_NO_OPEN:-}" ]; then
-            # __PORT__ в шаблоне заменяем на порт; страница сама перейдёт в консоль.
+            # Replace __PORT__ in the template with the port; the page will navigate to the console itself.
             sed "s/__PORT__/${PORT}/g" "$ROOT/scripts/preparing.html" >"$RUN_DIR/preparing.html"
             open "$RUN_DIR/preparing.html" && PREPARING_OPENED=1
         fi
 
-        # Только для проверки ветки установки uv: делаем вид, что uv не найден.
+        # Only to test the uv-install code path: pretend uv wasn't found.
         [ -n "${TG_NEWSPAPER_FORCE_UV_INSTALL:-}" ] && UV=""
         if [ -z "$UV" ]; then
-            echo "== установка uv ==" >>"$SETUP_LOG"
-            # Ставим uv в свой каталог, без правки профилей оболочки (NO_MODIFY_PATH).
+            echo "== installing uv ==" >>"$SETUP_LOG"
+            # Install uv into our own directory, without touching shell profiles (NO_MODIFY_PATH).
             if ! curl -LsSf https://astral.sh/uv/install.sh \
                 | env UV_INSTALL_DIR="$HOME_DIR/uv" UV_NO_MODIFY_PATH=1 sh >>"$SETUP_LOG" 2>&1; then
                 dialog "Не удалось установить uv (менеджер Python). Проверьте интернет и запустите TG Newspaper снова.
@@ -156,9 +156,9 @@ $(tail -n 15 "$SETUP_LOG")"
         fi
 
         cd "$ROOT" || exit 1
-        # --no-editable: путь к бандлу может меняться (App Translocation), editable
-        # .pth указывал бы в никуда. --reinstall-package: после обновления приложения
-        # в venv должен оказаться новый код при той же версии пакета.
+        # --no-editable: the bundle's path can change (App Translocation), an editable
+        # .pth would point nowhere. --reinstall-package: after an app update, the venv
+        # must end up with the new code even if the package version is unchanged.
         echo "== uv sync ($UV) ==" >>"$SETUP_LOG"
         if ! "$UV" sync --frozen --no-editable --reinstall-package tg-newspaper --quiet >>"$SETUP_LOG" 2>&1; then
             dialog "Не удалось установить зависимости (uv sync):
@@ -166,7 +166,7 @@ $(tail -n 15 "$SETUP_LOG")"
 $(tail -n 15 "$SETUP_LOG")"
             exit 1
         fi
-        # Идемпотентно: при уже установленном Chromium возвращается сразу.
+        # Idempotent: returns immediately if Chromium is already installed.
         echo "== playwright install chromium ==" >>"$SETUP_LOG"
         if ! "$PY" -m playwright install chromium >>"$SETUP_LOG" 2>&1; then
             dialog "Не удалось установить Chromium для вёрстки (playwright install):
@@ -178,8 +178,8 @@ $(tail -n 15 "$SETUP_LOG")"
     fi
     cd "$ROOT" || exit 1
 
-    # Напрямую интерпретатором venv, не `uv run`: он бы пере-синхронизировал
-    # окружение (и в editable-режиме по умолчанию).
+    # Directly via the venv's interpreter, not `uv run`: that would re-sync
+    # the environment (and in editable mode by default).
     nohup "$PY" scripts/console.py --no-browser --port "$PORT" >>"$LOG" 2>&1 &
     echo $! >"$PID_FILE"
 else
@@ -195,7 +195,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
     cd "$ROOT" || exit 1
 
-    # Первый запуск (нет .venv) занимает минуту-две — предупреждаем уведомлением.
+    # The first launch (no .venv yet) takes a minute or two — warn with a notification.
     if [ ! -d "$ROOT/.venv" ]; then
         notify "Готовлю окружение… первый запуск займёт минуту-две"
     fi
@@ -206,7 +206,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 $(tail -n 15 "$SETUP_LOG")"
         exit 1
     fi
-    # Идемпотентно: при уже установленном Chromium возвращается сразу.
+    # Idempotent: returns immediately if Chromium is already installed.
     if ! "$UV" run playwright install chromium >"$SETUP_LOG" 2>&1; then
         dialog "Не удалось установить Chromium для вёрстки (playwright install):
 
@@ -218,10 +218,10 @@ $(tail -n 15 "$SETUP_LOG")"
     echo $! >"$PID_FILE"
 fi
 
-# Ждём готовности порта до ~90 с (холодный старт на Windows-подобных системах и Defender-сканах).
+# Wait up to ~90s for the port to come up (cold start on Windows-like systems and Defender scans).
 for _ in $(seq 1 180); do
     if is_up; then
-        # Страница ожидания сама переходит на консоль — вторая вкладка не нужна.
+        # The waiting page redirects to the console on its own — no need for a second tab.
         if [ -z "$PREPARING_OPENED" ]; then
             open_url
         fi

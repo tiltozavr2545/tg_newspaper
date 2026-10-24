@@ -1,5 +1,5 @@
-# Windows PowerShell 5.1 и Inno Setup определяют UTF-8 только по BOM, а git с
-# автоконвертацией мог бы его потерять: эти файлы храним как есть.
+# Windows PowerShell 5.1 and Inno Setup detect UTF-8 only via BOM, and git with
+# autoconversion could lose it: we keep these files as-is.
 *.ps1 -text
 packaging/windows/*.iss -text
 packaging/windows/*.vbs -text

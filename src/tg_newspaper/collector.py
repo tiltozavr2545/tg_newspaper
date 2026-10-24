@@ -1,4 +1,4 @@
-"""Сбор истории каналов через Telethon за последние сутки."""
+"""Collecting channel history over the last 24 hours via Telethon."""
 
 from __future__ import annotations
 
@@ -33,11 +33,12 @@ def _to_post(channel: str, message: Message) -> Post:
 async def _download_photo(
     client: TelegramClient, channel: str, message: Message, media_dir: Path
 ) -> Path | None:
-    """Скачивает фото поста (не видео/документ — их в номер не ставим) в
-    media_dir под предсказуемым именем. Возвращает None молча при отсутствии
-    фото или при сбое скачивания — отсутствие фото никогда не должно ронять
-    весь прогон сбора, просто эта новость напечатается без иллюстрации
-    (см. layout.py — рендер уже устойчив к article.photo_data_uri = None)."""
+    """Downloads the post's photo (not video/document — those don't go into the
+    issue) into media_dir under a predictable name. Returns None silently if
+    there's no photo or the download fails — a missing photo should never
+    bring down the whole collection run, the news item just gets printed
+    without an illustration (see layout.py — rendering already tolerates
+    article.photo_data_uri = None)."""
     if not isinstance(message.media, MessageMediaPhoto):
         return None
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -45,7 +46,7 @@ async def _download_photo(
     try:
         saved = await message.download_media(file=str(dest))
     except Exception:
-        logger.exception("не удалось скачать фото %s/%s", channel, message.id)
+        logger.exception("failed to download photo %s/%s", channel, message.id)
         return None
     return Path(saved) if saved else None
 
@@ -66,7 +67,7 @@ async def collect_channel(
             photo_paths[(channel, message.id)] = photo_path
 
     logger.info(
-        "channel=%s собрано=%d фото=%d период=(%s, now]",
+        "channel=%s collected=%d photos=%d period=(%s, now]",
         channel, len(posts), len(photo_paths), since.isoformat(),
     )
     return posts, photo_paths

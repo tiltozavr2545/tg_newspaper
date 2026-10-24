@@ -1,12 +1,12 @@
-﻿; Установщик TG Newspaper для Windows (Inno Setup 6).
-; Сборка: iscc /DAppVersion=0.2.0 /DStageDir=<каталог с исходниками> packaging\windows\tg-newspaper.iss
-; Результат: Output\TG-Newspaper-<версия>-windows-setup.exe (каталог можно сменить /O<каталог>).
+﻿; TG Newspaper installer for Windows (Inno Setup 6).
+; Build: iscc /DAppVersion=0.2.0 /DStageDir=<directory with sources> packaging\windows\tg-newspaper.iss
+; Result: Output\TG-Newspaper-<version>-windows-setup.exe (the directory can be changed with /O<directory>).
 ;
-; StageDir готовит CI (git archive только нужных файлов проекта: pyproject.toml,
+; StageDir is prepared by CI (git archive of only the project files that are needed: pyproject.toml,
 ; uv.lock, README.md, .python-version, src\, scripts\console.py, scripts\preparing.html) —
-; так секреты и мусор рабочей копии в установщик не попадают.
-; В установщике только программа; Python, зависимости и Chromium launch.ps1
-; ставит при первом запуске в %LOCALAPPDATA%\TG Newspaper.
+; this way secrets and working-copy clutter don't end up in the installer.
+; The installer contains only the program; Python, dependencies and Chromium are
+; installed by launch.ps1 on first run into %LOCALAPPDATA%\TG Newspaper.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -16,12 +16,12 @@
 #endif
 
 [Setup]
-; Фиксированный GUID: новая версия ставится поверх прежней как обновление.
+; Fixed GUID: a new version installs over the previous one as an update.
 AppId={{6B0D3F2A-4C1E-4E8B-9A57-7D2F1C8E5A31}
 AppName=TG Newspaper
 AppVersion={#AppVersion}
 AppPublisher=TG Newspaper
-; Без прав администратора: ставим в профиль пользователя.
+; No administrator rights needed: we install into the user profile.
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\TG Newspaper
 DefaultGroupName=TG Newspaper
@@ -37,11 +37,11 @@ WizardStyle=modern
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
-; Ярлык на рабочем столе предлагается и включён по умолчанию.
+; A desktop shortcut is offered and enabled by default.
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [InstallDelete]
-; Обновление поверх: убираем старые исходники, чтобы не остались удалённые модули.
+; Upgrading in place: remove old sources so no deleted modules are left behind.
 Type: filesandordirs; Name: "{app}\src"
 Type: filesandordirs; Name: "{app}\scripts"
 
@@ -52,13 +52,13 @@ Source: "launch.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\icons\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-; wscript + launch.vbs запускают PowerShell скрыто - без мелькающего окна.
+; wscript + launch.vbs launch PowerShell hidden - no flashing window.
 Name: "{autoprograms}\TG Newspaper"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; IconFilename: "{app}\app.ico"; WorkingDir: "{app}"
 Name: "{autodesktop}\TG Newspaper"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; IconFilename: "{app}\app.ico"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "{app}"; Description: "Запустить TG Newspaper"; Flags: postinstall nowait skipifsilent
 
-; Деинсталлятор намеренно НЕ описывает [UninstallDelete] для %LOCALAPPDATA%\TG Newspaper:
-; там настройки, сессия Telegram, база выпусков, venv и браузер - данные пользователя
-; не должны пропадать при удалении или переустановке программы. Удалить их можно вручную.
+; The uninstaller intentionally does NOT declare [UninstallDelete] for %LOCALAPPDATA%\TG Newspaper:
+; it holds settings, the Telegram session, the issue database, the venv and the browser - user data
+; that must not be lost when the program is removed or reinstalled. It can be deleted manually.

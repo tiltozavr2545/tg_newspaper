@@ -9,7 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-# Секреты и состояние проекта
+# Secrets and project state
 .env
 *.session
 *.session-journal

@@ -1,100 +1,100 @@
-# Бриф проекта: TG Newspaper
+# Project brief: TG Newspaper
 
-> Агент, который каждое утро сам печатает бумажную газету из вчерашних новостей выбранных Telegram-каналов.
+> An agent that prints a paper newspaper every morning, by itself, from yesterday's news on a chosen set of Telegram channels.
 
-Документ описывает идею и её механику на момент старта — до начала реализации. По мере разработки его не переписывать: что получилось на самом деле, фиксируется в документации по устройству системы (появится в `docs/` по ходу — устройство скрипта, схема хранилища) и в `CHANGELOG.md`. Здесь — замысел и решения, принятые до первой строчки кода.
+This document describes the idea and its mechanics at the start — before implementation began. As development proceeds, it is not meant to be rewritten: what actually got built is documented separately, in docs describing how the system actually works (to appear in `docs/` along the way — script architecture, storage schema) and in `CHANGELOG.md`. What's here is the intent and the decisions made before the first line of code.
 
 ---
 
-## 1. Зачем это
+## 1. Why
 
-Читать новости — это скроллинг: лента не кончается, а то, что в ней важно, тонет среди дублей одной и той же новости с десяти каналов и роликов без единого слова текста. Идея — вынести чтение новостей из экрана на бумагу: раз в сутки печатается одна газетная полоса с тем, что действительно произошло за день, без дублей и без мусора, и на этом на сегодня всё — не нужно продолжать листать.
+Reading the news means scrolling: the feed never ends, and whatever's actually important in it drowns among duplicates of the same story from ten different channels and clips with not a single word of text. The idea is to move news reading off the screen and onto paper: once a day, a single newspaper page is printed with what actually happened that day, with no duplicates and no clutter, and that's it for the day — no need to keep scrolling.
 
-Это не агрегатор в привычном смысле (не выдаёт поток per request), а автономный агент с полным циклом: сам решает, что вчера было новостью, сам вёрстывает и сам печатает, без участия человека на любом из этих шагов.
+This isn't an aggregator in the usual sense (it doesn't serve a stream per request); it's an autonomous agent with a full cycle: it decides for itself what counted as news yesterday, lays it out itself, and prints it itself, with no human involved at any of these steps.
 
-## 2. Механика продукта
+## 2. Product mechanics
 
-### Список каналов
+### Channel list
 
-Задаётся вручную, в конфигурации проекта — не подбирается автоматически и не редактируется через интерфейс в первой версии. Кто и как правит список — открытый вопрос, см. [future-development.md](future-development.md).
+Set manually, in the project's configuration — not auto-discovered, and not editable through a UI in the first version. Who maintains the list and how is an open question, see [future-development.md](future-development.md).
 
-### Сбор постов
+### Collecting posts
 
-Источник — MTProto под пользовательским Telegram-аккаунтом (Telethon), не Bot API. Аккаунт подписан на все каналы-источники как обычный читатель.
+The source is MTProto under a user Telegram account (Telethon), not the Bot API. The account follows every source channel like an ordinary reader.
 
-**Причина выбора, определяющая архитектуру:** агент должен работать по модели "один короткий прогон по требованию, без постоянно работающего процесса" (см. раздел "Запуск" ниже) — у Bot API нет метода "отдай историю канала за период": бот получает посты только по мере их появления (`getUpdates`/webhook), что требует непрерывно работающего слушателя и несовместимо с этой моделью. MTProto-клиенты под пользовательским аккаунтом такой метод имеют (`iter_messages` с фильтром по дате) — это и стало решающим доводом в пользу MTProto, а не Bot API.
+**The reason behind this choice, which shapes the architecture:** the agent needs to work on a "one short run on demand, no always-running process" model (see "Launch" below) — the Bot API has no "hand over a channel's history for a period" method: a bot only gets posts as they arrive (`getUpdates`/webhook), which requires a continuously running listener and is incompatible with that model. MTProto clients under a user account do have such a method (`iter_messages` with a date filter) — that became the deciding factor in favor of MTProto over the Bot API.
 
-Практическое следствие: агент — **один скрипт**, а не связка "постоянный коллектор + отдельный печатник". При каждом запуске он:
-1. Запрашивает у Telegram историю каждого канала-источника за период с момента последнего успешного запуска (хранится где-то минимальное состояние — timestamp последнего прогона, возможно ID последнего обработанного сообщения на канал).
-2. Ведёт дальше всю обработку сам — фильтрация, дедупликация, рендер, печать.
+The practical consequence: the agent is **a single script**, not a pairing of "always-on collector + separate printer process". On every run it:
+1. Asks Telegram for each source channel's history since the last successful run (some minimal state is kept somewhere — the timestamp of the last run, possibly the ID of the last message processed per channel).
+2. Handles the rest of the processing itself from there — filtering, deduplication, rendering, printing.
 
-Если ПК не проснулся вовремя или прогон упал с ошибкой — это не катастрофа: посты в Telegram никуда не делись, следующий прогон возьмёт свои последние 24 часа от нажатия кнопки, а то, что осталось за их пределами, в номер не попадёт (наверстывание пропущенного сознательно не делается — см. «Закрытые вопросы» в [future-development.md](future-development.md)). Но сами посты никуда не делись, а потеря одного номера — не потеря данных. Это и есть главное практическое преимущество перед Bot API, у которого пропуск времени работы коллектора означает безвозвратную потерю данных.
+If the PC didn't wake up on time, or a run failed with an error, that's not a disaster: the posts are still sitting in Telegram, the next run will take its own last 24 hours from the button press, and whatever fell outside that window just doesn't make it into an issue (catching up on what was missed is deliberately not implemented — see "Closed questions" in [future-development.md](future-development.md)). But the posts themselves are never lost, and losing one issue isn't losing data. That's the main practical advantage over the Bot API, where missing the collector's uptime window means permanently losing data.
 
-Оборотная сторона: сессия Telethon (файл авторизации) — это ключ к Telegram-аккаунту, а не токен с ограниченными правами, как у бота. Хранить её нужно как секрет, не в репозитории. Поэтому под сессию заведён **отдельный Telegram-аккаунт, не основной личный** — утечка файла сессии компрометирует только вспомогательный аккаунт, подписанный на публичные новостные каналы, а не личную переписку. Оборотная сторона этого решения — нужен отдельный номер телефона для регистрации (переиспользовать номер, на который уже зарегистрирован другой аккаунт, нельзя) и отдельная подписка этого аккаунта на все каналы-источники.
+The flip side: the Telethon session (the auth file) is the key to the Telegram account, not a token with limited rights like a bot's. It needs to be stored as a secret, not in the repository. That's why there's a **separate Telegram account for this, not the main personal one** — a leaked session file only compromises the helper account, which follows public news channels, not personal correspondence. The flip side of that decision is needing a separate phone number to register it (a number already registered to another account can't be reused) and a separate subscription for that account to every source channel.
 
-### Фильтрация "не новостей"
+### Filtering out "non-news"
 
-Двухступенчатая, эвристики впереди LLM ради предсказуемости и экономии вызовов модели:
+Two-stage, with heuristics ahead of the LLM for predictability and to save on model calls:
 
-**Эвристики** отсеивают то, что не требует понимания смысла:
-- Медиа (фото/видео) без подписи или с подписью короче некоторого порога слов (в исходной формулировке задачи — пример "видео с подписью в 5 слов")
-- Посты без текста вообще (голосовые, стикеры, пересланное без комментария)
-- Прочие явные признаки "не текстовая новость" — уточняются в реализации
+**Heuristics** filter out what doesn't require understanding meaning:
+- Media (photo/video) with no caption, or a caption under some word-count threshold (the original task description gave "a video with a 5-word caption" as an example)
+- Posts with no text at all (voice messages, stickers, forwards with no comment)
+- Other clear "not a text news item" signals — to be refined during implementation
 
-**LLM** решает то, что эвристики оставили спорным:
-- Является ли пост по содержанию новостью (не реклама, не философствование, не вопрос в чат без ответа)
-- При необходимости — даёт сжатый заголовок/выжимку для вёрстки полосы
+**The LLM** decides what the heuristics left ambiguous:
+- Whether a post is, by content, actually news (not an ad, not musing out loud, not an unanswered question to the chat)
+- When needed, produces a condensed headline/summary for layout
 
-Точный порог эвристик и формулировка промпта для LLM-классификации — вопрос реализации, не брифа.
+The exact heuristic thresholds and the wording of the LLM classification prompt are implementation details, not part of the brief.
 
-### Дедупликация
+### Deduplication
 
-Одна и та же новость обычно расходится по нескольким каналам-источникам: почти дословно (репост/копипаста) или пересказанная своими словами. Комбинация:
-- Эвристика на схожесть текста отсеивает явные копипасты и репосты без разбора смысла
-- LLM/эмбеддинги — для случаев, когда та же новость пересказана другими словами в разных каналах
+The same news story usually spreads across several source channels: nearly verbatim (a repost/copy-paste) or retold in different words. A combination:
+- A text-similarity heuristic filters out obvious copy-pastes and reposts without analyzing meaning
+- LLM/embeddings — for cases where the same story is retold in different words across different channels
 
-Что именно сохраняется при обнаруженном дубле, решено 2026-10-14: самая подробная версия, степень подробности определяет LLM (не самая ранняя по времени и не из канала с наивысшим приоритетом), см. «Закрытые вопросы» в [future-development.md](future-development.md).
+What exactly is kept when a duplicate is found was decided on 2026-10-14: the most detailed version, with the LLM judging how detailed it is (not the earliest by time, and not from the highest-priority channel) — see "Closed questions" in [future-development.md](future-development.md).
 
-### Вёрстка и рендер
+### Layout and rendering
 
-Из отфильтрованного и дедуплицированного списка новостей за сутки собирается изображение в стиле газетной полосы: заголовок дня, несколько новостей, колонки, декоративные элементы (виньетки, линейки — то, что визуально читается как "газета", а не как список текста).
+From the filtered, deduplicated list of the day's news, an image is assembled in the style of a newspaper page: a headline of the day, several stories, columns, decorative elements (vignettes, rules — things that read visually as "a newspaper", not as a list of text).
 
-Рендер — **HTML/CSS + headless-браузер (Playwright/Chromium)**, не программная отрисовка через Pillow. Решающий довод: CSS-многоколоночная вёрстка (`column-count`) даёт автоматический перенос текста между колонками — ровно газетное поведение, которое в Pillow пришлось бы реализовывать вручную, — а типографика (переносы, буквица, декоративные рамки, тени) там же почти бесплатна. Плата за это — тяжёлая зависимость (headless Chromium, сотни мегабайт, заметно дольше стартует, чем чистый Python-скрипт) — на основном ПК это не критично, но стоит помнить, если агент когда-нибудь переедет на слабое железо (см. "Перенос агента на отдельное устройство" в [future-development.md](future-development.md)).
+Rendering is **HTML/CSS + a headless browser (Playwright/Chromium)**, not programmatic drawing via Pillow. The deciding factor: CSS multi-column layout (`column-count`) gives automatic text reflow between columns — exactly the newspaper-like behavior that would have to be hand-built in Pillow — and typography (hyphenation, drop caps, decorative borders, shadows) comes nearly for free there too. The cost is a heavy dependency (headless Chromium, hundreds of megabytes, noticeably slower to start than a plain Python script) — not a problem on the main PC, but worth remembering if the agent ever moves to weaker hardware (see "Moving the agent to a separate device" in [future-development.md](future-development.md)).
 
-Объём номера фиксирован: обложка плюс до 6 полос мозаики. Если новостей больше, чем помещается, они отбираются по значимости, а длинные тексты сокращает нейросеть. Если за сутки в печать прошло меньше 10 новостей, номер не собирается (решено 2026-10-14, см. «Закрытые вопросы» в [future-development.md](future-development.md)).
+The issue's length is fixed: a cover plus up to 6 mosaic pages. If there's more news than fits, it's selected by importance, and long texts are shortened by the model. If fewer than 10 news items passed into print in a day, no issue is assembled (decided 2026-10-14, see "Closed questions" in [future-development.md](future-development.md)).
 
-### Печать
+### Printing
 
-Принтер — HP Color LaserJet Pro MFP M377dw, печать только по локальной сети (AirPrint или CUPS/IPP), формат A4/Letter. Облачная печать для этой модели недоступна физически: HP закрыла сервис ePrint в январе 2023 года (перестала выпускать его на новых принтерах ещё в 2020-м), Google Cloud Print закрыт Google ещё раньше, в конце 2020-го. Это и значит, что печатающий процесс обязан находиться в той же локальной сети, что и принтер, — облачный вариант архитектуры для этого принтера не рассматривается. Поведение при недоступном принтере (выключен, нет бумаги, нет связи) — открытый вопрос.
+The printer is an HP Color LaserJet Pro MFP M377dw, printing only over the local network (AirPrint or CUPS/IPP), format A4/Letter. Cloud printing is physically unavailable for this model: HP shut down the ePrint service in January 2023 (it had stopped shipping it on new printers back in 2020), and Google Cloud Print was shut down by Google even earlier, at the end of 2020. This means the printing process must sit on the same local network as the printer — a cloud-based architecture for this printer isn't under consideration. Behavior when the printer is unreachable (off, out of paper, no connection) is an open question.
 
-### Запуск
+### Launch
 
-**Пересмотрено после первого этапа реализации:** изначально планировалось расписание (ПК будится по RTC-будильнику/Wake-on-LAN, автозапуск, автовыключение по завершении) — от этого отказались до реализации Этапа 5 в пользу запуска по требованию. Причина — газета нужна не строго "рано утром одна штука в сутки", а когда пользователь сам решил её собрать; расписание и связанная с ним инфраструктура (пробуждение ПК, автозапуск ОС, надёжность RTC/WoL) добавляли сложность без необходимости.
+**Revisited after the first implementation stage:** a schedule was originally planned (the PC waking via RTC alarm/Wake-on-LAN, auto-start, auto-shutdown when done) — this was dropped before implementing Stage 5 in favor of on-demand launch. The reason: the newspaper doesn't strictly need to be "exactly one copy, early every morning" — it needs to exist when the user decides to assemble it; the schedule and its supporting infrastructure (waking the PC, OS auto-start, RTC/WoL reliability) added complexity without necessity.
 
-Вместо этого — локальная веб-консоль на домашнем ПК с кнопкой "Собрать газету": пользователь открывает её и запускает прогон явно, когда захочет. Тот же прогон доступен из терминала одной командой — для случаев, когда браузер не нужен. Никакого отдельного долгоживущего процесса как не было, так и нет: один скрипт от нажатия кнопки до печати, тот же прогон, что раньше запускался по будильнику.
+Instead: a local web console on the home PC with an "Assemble newspaper" button: the user opens it and triggers a run explicitly, whenever they want. The same run is also available from the terminal with a single command — for cases where a browser isn't wanted. There's still no separate long-running process, just as there never was: one script from button press to printing — the same run that used to be triggered by an alarm.
 
-Период сбора не привязан к тому, был ли предыдущий прогон удачным или когда он случился, — это фиксированные последние 24 часа **от момента нажатия кнопки**, и так было даже в версии с расписанием (см. "закрытые вопросы" в [future-development.md](future-development.md)). Отказ от расписания эту механику не меняет: пропущенный день не наверстывается ни там, ни там — просто раньше "пропуск дня" означал "ПК не проснулся", а теперь означает "пользователь не нажал кнопку".
+The collection window isn't tied to whether or when the previous run succeeded — it's always a fixed last 24 hours **from the moment the button is pressed**, and that was true even in the scheduled version (see "closed questions" in [future-development.md](future-development.md)). Dropping the schedule doesn't change this mechanic: a missed day isn't caught up on either way — it's just that "missed a day" used to mean "the PC didn't wake up", and now it means "the user didn't press the button".
 
-## 3. Что делать в первой версии
+## 3. What to build in the first version
 
-- Список каналов — захардкожен в конфиге, без интерфейса управления
-- Локальная консоль с кнопкой "Собрать газету" (плюс тот же прогон из терминала): по нажатию — через Telethon забирает историю каждого канала за последние 24 часа → отсеивает эвристиками мусор → спорные случаи и дедупликацию отдаёт LLM → рендерит одно изображение по фиксированному шаблону полосы → отправляет на принтер по локальной сети
-- Логирование прогона — сколько постов пришло, сколько отсеяно и почему, что напечатано. Без этого разобраться в поведении агента, который работает без присмотра во время прогона, будет невозможно
+- The channel list — hardcoded in config, no management UI
+- A local console with an "Assemble newspaper" button (plus the same run from the terminal): on press — pulls each channel's last-24-hours history via Telethon → filters out junk with heuristics → hands ambiguous cases and deduplication to the LLM → renders a single image from a fixed page template → sends it to the printer over the local network
+- Run logging — how many posts came in, how many were filtered out and why, what got printed. Without this, understanding the behavior of an agent that runs unattended during a run would be impossible
 
-Персонализация значимости и по рубрикам, веб-интерфейс управления каналами и архив напечатанного не входят в первую версию, но входят в полноценное готовое состояние проекта — реализуются Этапами 6-8 [implementation-plan.md](implementation-plan.md) после первой версии. Устойчивая retry-логика при офлайн-принтере и учёт расхода бумаги остаются отложенными без решённого приоритета — в [future-development.md](future-development.md).
+Importance and section-based personalization, a channel-management web UI, and a printed archive aren't part of the first version, but are part of the project's full, finished state — implemented in Stages 6-8 of [implementation-plan.md](implementation-plan.md) after the first version. Robust retry logic for an offline printer and tracking paper usage remain deferred with no assigned priority — in [future-development.md](future-development.md).
 
-## 4. Рекомендуемый стек
+## 4. Recommended stack
 
-**Python** — по совокупности: зрелая библиотека MTProto-клиента (Telethon), Playwright для headless-рендера HTML в изображение, плюс без труда ложащиеся туда же вызовы LLM. Особых причин выбирать другой язык для этой задачи нет — весь пайплайн однородный (I/O + пакетная обработка по требованию), не нагруженный по производительности.
+**Python** — taken together: a mature MTProto client library (Telethon), Playwright for headless HTML-to-image rendering, plus LLM calls that drop easily into the same stack. There's no particular reason to pick a different language for this task — the whole pipeline is uniform (I/O plus on-demand batch processing), with no real performance load.
 
-## 5. Открытые развилки
+## 5. Open forks
 
-Закрыто на этапе брифа: где физически живёт агент (основной домашний ПК), способ доступа к каналам (MTProto/Telethon под отдельным вспомогательным аккаунтом), принтер и способ печати (HP Color LaserJet Pro MFP M377dw, только локальная сеть), технология рендера (HTML/CSS + Playwright). Пересмотрено позже (после Этапов 0–1): способ запуска — не расписание с пробуждением ПК, а кнопка в локальной консоли, см. "Запуск" выше.
+Settled at the brief stage: where the agent physically lives (the main home PC), how channels are accessed (MTProto/Telethon under a separate helper account), the printer and how it prints (HP Color LaserJet Pro MFP M377dw, local network only), the rendering technology (HTML/CSS + Playwright). Revisited later (after Stages 0–1): how it's launched — not a schedule with PC wake-up, but a button in the local console, see "Launch" above.
 
-Ниже — то, что осталось сознательно не решено, с раскрытием в [future-development.md](future-development.md):
+Below is what's still deliberately unresolved, expanded on in [future-development.md](future-development.md):
 
-- ~~Хранилище состояния между запусками~~ — закрыто: SQLite (см. «Закрытые вопросы» в [future-development.md](future-development.md))
-- ~~Правило выбора «какую версию дубля оставить»~~ — закрыто 2026-10-14: самая подробная, решает LLM (там же)
-- ~~Поведение при нехватке новостей за период~~ — закрыто 2026-10-14: меньше 10 новостей — номер не собирается (там же). **Открыто:** поведение при недоступном принтере
-- **Открыто:** формат и способ редактирования списка каналов (Этап 8)
-- ~~Границы периода сбора при накопившемся отставании~~ — закрыто: всегда последние 24 часа от нажатия, без наверстывания (там же)
+- ~~State storage between runs~~ — closed: SQLite (see "Closed questions" in [future-development.md](future-development.md))
+- ~~Rule for which duplicate version to keep~~ — closed 2026-10-14: the most detailed one, as judged by the LLM (same place)
+- ~~Behavior when there isn't enough news for a period~~ — closed 2026-10-14: fewer than 10 news items and no issue is assembled (same place). **Open:** behavior when the printer is unreachable
+- **Open:** channel-list format and how it's edited (Stage 8)
+- ~~Collection-window boundaries when runs have fallen behind~~ — closed: always the last 24 hours from the button press, with no catch-up (same place)

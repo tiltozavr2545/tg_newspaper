@@ -1,9 +1,9 @@
 #!/bin/bash
-# Создаёт приложение "TG Newspaper.app" — иконку для запуска консоли одним
-# кликом (Dock/Launchpad/Finder). Использование: scripts/make_app.sh [каталог],
-# по умолчанию ~/Applications. Бандл минимальный, собран руками: внутри лишь
-# sh-скрипт, который вызывает scripts/launch.sh этого репозитория (путь вписан
-# при генерации — после переноса репозитория запустите make_app.sh заново).
+# Creates the "TG Newspaper.app" application — a one-click icon to launch the console
+# (Dock/Launchpad/Finder). Usage: scripts/make_app.sh [directory],
+# defaults to ~/Applications. The bundle is minimal, hand-built: inside it's just a
+# sh script that calls this repo's scripts/launch.sh (the path is baked in
+# at generation time — rerun make_app.sh after moving the repository).
 set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +21,7 @@ exec "$ROOT/scripts/launch.sh"
 SCRIPT
 chmod +x "$APP/Contents/MacOS/$EXE"
 
-# Иконка — готовый ассет из репозитория (рисуется один раз scripts/make_icons.py).
+# Icon — a ready-made asset from the repo (drawn once by scripts/make_icons.py).
 ICON_KEY=""
 if [ -f "$ROOT/packaging/icons/AppIcon.icns" ]; then
     cp "$ROOT/packaging/icons/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
@@ -30,8 +30,8 @@ else
     echo "packaging/icons/AppIcon.icns не найден — приложение создано без иконки." >&2
 fi
 
-# LSUIElement: после запуска в Dock не висит лишняя иконка — скрипт отрабатывает
-# и завершается, консоль живёт отдельным фоновым процессом.
+# LSUIElement: after launch no extra icon sits in the Dock — the script runs
+# and exits, the console lives on as a separate background process.
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

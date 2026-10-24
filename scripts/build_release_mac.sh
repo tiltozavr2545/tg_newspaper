@@ -1,9 +1,9 @@
 #!/bin/bash
-# Сборка релизного dmg для macOS: scripts/build_release_mac.sh <версия> <каталог_вывода>
-# Результат — <каталог_вывода>/TG-Newspaper-<версия>-mac.dmg с "TG Newspaper.app"
-# и ссылкой на /Applications (чтобы перетащить). Внутри приложения — только
-# исходники проекта; Python, зависимости и Chromium при первом запуске ставит
-# scripts/launch.sh в каталог пользователя (см. AGENTS.md). Без цифровой подписи.
+# Builds the release dmg for macOS: scripts/build_release_mac.sh <version> <output_dir>
+# Result — <output_dir>/TG-Newspaper-<version>-mac.dmg with "TG Newspaper.app"
+# and a symlink to /Applications (for drag-and-drop). The app contains only
+# the project sources; Python, dependencies and Chromium are installed on first run by
+# scripts/launch.sh into the user's directory (see AGENTS.md). Not code-signed.
 set -eu
 
 if [ $# -ne 2 ]; then
@@ -22,9 +22,9 @@ APP="$WORK/stage/$EXE.app"
 RES="$APP/Contents/Resources"
 mkdir -p "$APP/Contents/MacOS" "$RES/app" "$OUT_DIR"
 
-# Копия проекта — только файлы из белого списка путей, которые знает git
-# (отслеживаемые + новые не из .gitignore): так .env, *.session, data/,
-# channels.yaml и прочее локальное в бандл не попадут никогда.
+# Copy of the project — only files from the allow-listed paths that git knows about
+# (tracked + new ones not in .gitignore): this way .env, *.session, data/,
+# channels.yaml and other local files never end up in the bundle.
 (
     cd "$ROOT"
     git ls-files -z --cached --others --exclude-standard -- pyproject.toml uv.lock README.md .python-version src \
@@ -33,19 +33,19 @@ mkdir -p "$APP/Contents/MacOS" "$RES/app" "$OUT_DIR"
 ) | tar -xf - -C "$RES/app"
 chmod +x "$RES/app/scripts/launch.sh"
 
-# Идентификатор сборки: лаунчер по нему решает, нужна ли подготовка окружения
-# (uv sync) — после обновления приложения он меняется, иначе запуск без сети.
+# Build identifier: the launcher uses it to decide whether the environment needs
+# preparing (uv sync) — it changes after an app update, otherwise it starts without the network.
 REV="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
 if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then REV="$REV-dirty"; fi
 printf '%s' "$VERSION+$REV" >"$RES/app/BUILD_ID"
 
 cp "$ROOT/packaging/icons/AppIcon.icns" "$RES/AppIcon.icns"
 
-# Путь к launch.sh — относительно самого себя: приложение можно положить куда угодно.
+# Path to launch.sh — relative to itself: the app can be placed anywhere.
 cat >"$APP/Contents/MacOS/$EXE" <<'SCRIPT'
 #!/bin/sh
-# Данные пользователя вне бандла: приложение заменяется при обновлении.
-# Заданное снаружи значение не затираем — так смоук-тест CI работает во временном HOME.
+# User data stays outside the bundle: the app gets replaced on update.
+# We don't overwrite a value set from outside — this is how the CI smoke test works with a temporary HOME.
 : "${TG_NEWSPAPER_HOME:=$HOME/Library/Application Support/TG Newspaper}"
 export TG_NEWSPAPER_HOME
 export TG_NEWSPAPER_RELEASE=1
@@ -53,8 +53,8 @@ exec "$(dirname "$0")/../Resources/app/scripts/launch.sh"
 SCRIPT
 chmod +x "$APP/Contents/MacOS/$EXE"
 
-# LSUIElement: в Dock не висит лишняя иконка — скрипт отрабатывает и завершается,
-# консоль живёт отдельным фоновым процессом.
+# LSUIElement: no extra icon sits in the Dock — the script runs and exits,
+# the console lives on as a separate background process.
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

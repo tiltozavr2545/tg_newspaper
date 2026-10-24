@@ -102,22 +102,22 @@ _SHUTDOWN_PAGE = (
 
 logger = logging.getLogger(__name__)
 
-# Результаты последних действий мастера ({шаг: StepResult}) — "flash": POST
-# отвечает редиректом (чтобы F5 не повторял отправку), а сообщение ждёт
-# следующего GET. Одна консоль — один человек, глобальный словарь достаточен.
+# Results of the latest wizard actions ({step: StepResult}) — "flash": POST
+# responds with a redirect (so F5 doesn't repeat the submission), and the
+# message waits for the next GET. One console — one person, a global dict is enough.
 _flash: dict[str, wizard.StepResult] = {}
 _channel_checks: list[tuple[str, wizard.StepResult]] = []
 _youtube_checks: list[tuple[str, wizard.StepResult]] = []
-# Введённый текст при ошибке разбора/резолва — вернуть в textarea, а не терять ввод.
+# Entered text on a parse/resolve error — put it back in the textarea instead of losing the input.
 _drafts: dict[str, str] = {}
 _flash_lock = threading.Lock()
 
-# Ошибки сборки номера ({run_id: текст}) — тоже "flash": отбор к этому моменту
-# уже сохранён, поэтому POST всё равно редиректит на страницу прогона, а
-# причина ждёт там до следующего показа.
+# Issue assembly errors ({run_id: text}) — also "flash": the selection is
+# already saved by this point, so POST still redirects to the run page, and
+# the reason waits there until the next render.
 _render_errors: dict[int, str] = {}
-# PDF строится в Chromium; два одновременных запроса одного файла не должны
-# писать его параллельно.
+# The PDF is built in Chromium; two concurrent requests for the same file
+# must not write it in parallel.
 _pdf_lock = threading.Lock()
 
 _ISSUE_PNG_RE = re.compile(r"/issue/([0-9]+)/page_([0-9]+)\.png")
@@ -151,8 +151,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _serve_issue_file(self, conn, config, path: str) -> bool:
-        """Раздача полос и PDF номера. Пути собираются из чисел, а не из
-        строки запроса (защита от path traversal). True — запрос обработан."""
+        """Serves issue page images and PDF. Paths are built from numbers, not
+        from the request string (protection against path traversal). True — request handled."""
         m_png = _ISSUE_PNG_RE.fullmatch(path)
         m_pdf = _ISSUE_PDF_RE.fullmatch(path)
         if not (m_png or m_pdf):
@@ -177,8 +177,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             with _pdf_lock:
                 if not pdf.exists():
                     build_pdf(pages, pdf, sheets=(kind == "a3"))
-        except Exception as exc:  # noqa: BLE001 — причину показываем, сервер не роняем
-            logger.exception("не удалось собрать PDF номера #%d", run_id)
+        except Exception as exc:  # noqa: BLE001 — we show the reason, don't crash the server
+            logger.exception("failed to build PDF for issue #%d", run_id)
             self._send_html(render_error_page(f"Не удалось собрать PDF: {exc}"), status=500)
             return True
         moment = run.period_end or run.started_at
@@ -190,10 +190,10 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         return True
 
     def _ready_for_llm(self, config) -> bool:
-        """Общая проверка перед тем, что ходит в Gemini: онбординг пройден и
-        ключ задан. Иначе сама отвечает редиректом/страницей ошибки."""
-        # Без онбординга прогон не стартует (Этап 6): профиль нужен персональной
-        # оценке; "Пропустить" на странице онбординга снимает блокировку.
+        """Common check before anything that talks to Gemini: onboarding is
+        done and the key is set. Otherwise responds itself with a redirect/error page."""
+        # Without onboarding the run doesn't start (Stage 6): the profile is
+        # needed for personalized scoring; "Skip" on the onboarding page lifts the block.
         if not load_profile(connect(config.db_path)).onboarded:
             self._redirect("/onboarding")
             return False
@@ -210,21 +210,21 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
 
     @staticmethod
     def _try_assemble(config, run_id: int) -> None:
-        """Собирает номер; сбой (Gemini/Chromium) не пробрасывает, а кладёт
-        в _render_errors — отбор уже сохранён, страница прогона покажет причину."""
+        """Assembles the issue; a failure (Gemini/Chromium) is not propagated
+        but stored in _render_errors — the selection is already saved, the run page will show the reason."""
         conn = connect(config.db_path)
         try:
             run = next(r for r in list_runs(conn) if r.run_id == run_id)
             assemble_issue(config, conn, run)
             _render_errors.pop(run_id, None)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("сборка номера прогона #%d не удалась", run_id)
+            logger.exception("assembling issue for run #%d failed", run_id)
             _render_errors[run_id] = f"{exc}\n\n{traceback.format_exc()}"
 
     def _read_form(self) -> dict[str, str]:
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length).decode("utf-8") if length else ""
-        # parse_qs отдаёт списки; поля формы у нас одиночные — берём первое.
+        # parse_qs returns lists; our form fields are single-valued — take the first.
         return {k: v[0] for k, v in parse_qs(raw, keep_blank_values=True).items()}
 
     @staticmethod
@@ -237,8 +237,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
 
     @staticmethod
     def _collect_ranks(form, survey, views):
-        """Из полей формы — места по постам опроса ({ключ: место|None}) и
-        сырые значения полей (чтобы вернуть форму с сохранёнными ответами)."""
+        """From the form fields — ranks for the survey posts ({key: rank|None})
+        and the raw field values (to return the form with saved answers)."""
         ranks, selected = {}, {}
         for v in views:
             name = rank_field_name(survey.survey_id, v.item)
@@ -264,14 +264,14 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self._send_html(render_onboarding_page(profile.interests, profile.disinterests, rounds))
 
     def _handle_onboarding_post(self, conn) -> None:
-        if load_profile(conn).onboarded:  # повторная отправка/двойной клик — не перезаписываем
+        if load_profile(conn).onboarded:  # resubmission/double click — don't overwrite
             self._redirect("/")
             return
         form = self._read_form()
         interests = form.get("interests", "").strip()
         disinterests = form.get("disinterests", "").strip()
-        # Раунды берём из уже созданных (не создаём новые): читатель отвечает
-        # на те посты, что видел, даже если в базе за это время появились другие.
+        # Rounds are taken from the ones already created (no new ones created):
+        # the reader answers about the posts they saw, even if others appeared in the DB meanwhile.
         surveys = list_surveys(conn, "onboarding", only_pending=True)
         rounds, answers, selected, error = [], [], {}, None
         for survey in surveys:
@@ -290,12 +290,12 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self._redirect("/")
 
 
-    # ------------------------------------------------------------ мастер настройки
+    # ------------------------------------------------------------ setup wizard
 
     def _setup_gate(self) -> bool:
-        """True, если проект настроен. Иначе отвечает редиректом на мастер с
-        указанием следующего шага и возвращает False. Проверка не падает при
-        отсутствии .env/channels.yaml/сессии (в отличие от load_config)."""
+        """True if the project is set up. Otherwise responds with a redirect
+        to the wizard pointing at the next step and returns False. The check
+        doesn't fail when .env/channels.yaml/session is missing (unlike load_config)."""
         missing = wizard.next_missing_step(wizard.compute_status())
         if missing is None:
             return True
@@ -350,11 +350,11 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
     def _handle_setup_post(self) -> None:
         form = self._read_form()
         path = self.path.partition("?")[0]
-        # Секреты в логи не пишем: логируется только путь, не форма.
+        # We don't write secrets to logs: only the path is logged, not the form.
 
         if path == "/setup/telegram":
             api_id = form.get("api_id", "").strip()
-            api_hash = form.get("api_hash", "").strip()  # пустой = не менять
+            api_hash = form.get("api_hash", "").strip()  # empty = don't change
             name = form.get("session_name", "").strip() or wizard.DEFAULT_SESSION_NAME
             if not api_id.isdigit():
                 self._flash_set(wizard.STEP_TELEGRAM, wizard.StepResult(False, "api_id должен быть целым числом (только цифры)."))
@@ -367,7 +367,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                 if api_hash:
                     updates["TG_API_HASH"] = api_hash
                 wizard.update_env_file(env_path(), updates)
-                wizard.LOGIN.reset()  # другие реквизиты/имя сессии — прежний вход не в счёт
+                wizard.LOGIN.reset()  # different credentials/session name — the previous login doesn't count
                 self._flash_set(wizard.STEP_TELEGRAM, wizard.StepResult(True, "Сохранено."))
             self._setup_redirect(wizard.STEP_TELEGRAM)
             return
@@ -409,7 +409,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                 with _flash_lock:
                     _drafts["channels"] = text
             else:
-                # YouTube живёт в том же файле — карточки не должны затирать друг друга.
+                # YouTube lives in the same file — the cards must not overwrite each other.
                 parsed.youtube = wizard.load_channels(channels_path()).youtube
                 wizard.save_channels(channels_path(), parsed)
                 channels = parsed.channels
@@ -439,7 +439,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         step = wizard.STEP_LOGIN if path.startswith("/setup/login") else path.rsplit("/", 1)[-1]
         self._setup_redirect(step)
 
-    def do_GET(self) -> None:  # noqa: N802 (имя метода задано http.server)
+    def do_GET(self) -> None:  # noqa: N802 (method name dictated by http.server)
         if self.path == "/setup" or self.path.startswith("/setup?"):
             self._handle_setup_get()
             return
@@ -450,8 +450,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path in ("/", "/index.html"):
             run_id = latest_issue_run_id(conn)
-            # Опрос предлагаем, пока по последнему собранному номеру нет
-            # отправленного (неотправленный/несозданный — предлагаем).
+            # We offer the survey as long as there's no submitted one for the
+            # latest assembled issue (not submitted/not created — we offer it).
             pending = run_id is not None and not any(
                 s.submitted for s in list_surveys(conn, "issue", run_id=run_id)
             )
@@ -475,8 +475,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             except ValueError:
                 self._send_html("not found", status=404)
                 return
-            # Ленивое создание: первый заход фиксирует 5 постов в БД, дальше
-            # тот же опрос (create_issue_survey идемпотентна).
+            # Lazy creation: the first visit fixes 5 posts in the DB, after
+            # that it's the same survey (create_issue_survey is idempotent).
             survey_id = create_issue_survey(conn, run_id)
             if survey_id is None:
                 self._send_html(
@@ -533,12 +533,12 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self._send_html("not found", status=404)
 
     def do_POST(self) -> None:  # noqa: N802
-        # Выключение обрабатываем раньше мастера настройки: консоль в фоне без
-        # окна, и остановить её должно быть можно на любом этапе.
+        # Shutdown is handled before the setup wizard: the console runs in
+        # the background with no window, and it must be stoppable at any stage.
         if self.path == "/shutdown":
             self._send_html(_SHUTDOWN_PAGE)
-            # server.shutdown() ждёт выхода из serve_forever; вызвав его из
-            # потока обработчика, получили бы deadlock — поэтому отдельный поток.
+            # server.shutdown() waits for serve_forever to exit; calling it
+            # from the handler thread would deadlock — hence the separate thread.
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         if self.path.startswith("/setup/"):
@@ -551,8 +551,8 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path == "/onboarding/skip":
-            # Пропуск ставит onboarded_at с пустыми ответами — иначе отказ от
-            # онбординга навсегда заблокировал бы запуск прогона.
+            # Skipping sets onboarded_at with empty answers — otherwise
+            # declining onboarding would permanently block running the pipeline.
             save_profile(connect(load_config().db_path), "", "", onboarded=True)
             self._redirect("/")
             return
@@ -566,7 +566,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             if survey is None:
                 self._send_html("опрос не найден", status=404)
                 return
-            if survey.submitted:  # повторная отправка не перезаписывает ответ
+            if survey.submitted:  # resubmission doesn't overwrite the answer
                 self._redirect(f"/survey/{survey.survey_id}")
                 return
             views = self._views(conn, survey)
@@ -581,7 +581,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
 
         m_render = _RENDER_RE.fullmatch(self.path)
         if m_render:
-            # Ручная (пере)сборка номера: для старых прогонов и после сбоя.
+            # Manual (re)assembly of an issue: for old runs and after a failure.
             run_id = int(m_render.group(1))
             config = load_config()
             if not any(r.run_id == run_id for r in list_runs(connect(config.db_path))):
@@ -589,7 +589,7 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
                 return
             if not self._ready_for_llm(config):
                 return
-            logger.info("сборка номера прогона #%d по кнопке", run_id)
+            logger.info("assembling issue for run #%d via button", run_id)
             self._try_assemble(config, run_id)
             self._redirect(run_page_filename(run_id))
             return
@@ -602,32 +602,33 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         if not self._ready_for_llm(config):
             return
 
-        logger.info("получена команда 'Собрать газету' — запускаю прогон")
+        logger.info("received 'Собрать газету' command — starting run")
         try:
             result = run_pipeline_for_last_24h(config)
-        except Exception as exc:  # noqa: BLE001 — показываем причину в браузере, не роняем сервер
-            logger.exception("прогон завершился с ошибкой")
+        except Exception as exc:  # noqa: BLE001 — we show the reason in the browser, don't crash the server
+            logger.exception("run finished with an error")
             self._send_html(render_error_page(f"{exc}\n\n{traceback.format_exc()}"), status=500)
             return
 
         included = sum(1 for o in result.outcomes if o.included)
         logger.info(
-            "прогон #%d завершён: постов=%d пошло=%d",
+            "run #%d finished: posts=%d included=%d",
             result.run_id, len(result.outcomes), included,
         )
-        # Номер вёрстаем сразу: отбор уже в БД, поэтому сбой вёрстки не
-        # теряет прогон — страница прогона покажет ошибку и кнопку "Свёрстать".
+        # We lay out the issue right away: the selection is already in the DB,
+        # so a layout failure doesn't lose the run — the run page will show the
+        # error and a "Lay out" button.
         self._try_assemble(config, result.run_id)
         self._redirect(run_page_filename(result.run_id))
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002 — сигнатура базового класса
+    def log_message(self, format: str, *args) -> None:  # noqa: A002 — base class's method signature
         logger.info("%s - %s", self.address_string(), format % args)
 
 
 def _pid_file() -> Path:
     run_dir = os.environ.get("TG_NEWSPAPER_RUN_DIR")
-    # Без RUN_DIR — рядом с данными пользователя (в разработке это <репозиторий>/data,
-    # в релизе — <TG_NEWSPAPER_HOME>/data), а не рядом с кодом программы.
+    # Without RUN_DIR — next to the user's data (in development that's
+    # <repo>/data, in a release — <TG_NEWSPAPER_HOME>/data), not next to the program code.
     base = Path(run_dir) if run_dir else home_dir() / "data"
     return base / "console.pid"
 
@@ -642,15 +643,14 @@ def main() -> None:
     port = args.port
 
     url = f"http://localhost:{port}/"
-    # ThreadingHTTPServer, не HTTPServer: однопоточный сервер обслуживает
-    # запросы по одному — зависшее или незакрытое соединение (например,
-    # keep-alive от браузера) блокирует вообще все следующие запросы,
-    # проверено на практике.
+    # ThreadingHTTPServer, not HTTPServer: a single-threaded server handles
+    # requests one at a time — a stuck or unclosed connection (e.g. browser
+    # keep-alive) blocks every subsequent request, confirmed in practice.
     try:
         server = http.server.ThreadingHTTPServer(("localhost", port), ConsoleHandler)
     except OSError:
-        # Порт занят — почти наверняка это уже работающая консоль. pid-файл не
-        # трогаем: он принадлежит запущенному экземпляру.
+        # Port in use — almost certainly an already-running console. We don't
+        # touch the pid file: it belongs to the running instance.
         print(f"Порт {port} занят — консоль уже запущена: {url}", flush=True)
         if not args.no_browser:
             webbrowser.open(url)
@@ -658,8 +658,8 @@ def main() -> None:
     try:
         with server:
             print(f"Консоль: {url} (Ctrl+C — остановить сервер)", flush=True)
-            # Браузер открываем только после bind: иначе он мог бы получить
-            # "connection refused", не дождавшись запуска сервера.
+            # We open the browser only after bind: otherwise it could get
+            # "connection refused" before the server has started.
             if not args.no_browser:
                 webbrowser.open(url)
             try:

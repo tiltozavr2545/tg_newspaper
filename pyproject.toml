@@ -1,17 +1,17 @@
 [project]
 name = "tg-newspaper"
 version = "0.1.4"
-description = "Агент, который печатает бумажную газету из вчерашних новостей Telegram-каналов"
+description = "An agent that prints a paper newspaper from yesterday's news from Telegram channels"
 authors = [
     { name = "Тимофей Русаков", email = "toptim2545@gmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
     "google-genai>=2.24.0",
-    # Закреплено на 1.50.0: более новые версии Playwright (1.5x+) больше не
-    # публикуют сборки Chromium под macOS 12 (Monterey) — именно она стоит на
-    # рабочем ПК ("ERROR: Playwright does not support chromium on mac12" на
-    # 1.63.0). Поднимать версию — только вместе с обновлением macOS.
+    # Pinned to 1.50.0: newer Playwright versions (1.5x+) no longer ship
+    # Chromium builds for macOS 12 (Monterey) — which is what runs on the
+    # work machine ("ERROR: Playwright does not support chromium on mac12" on
+    # 1.63.0). Only bump the version together with a macOS upgrade.
     "playwright==1.50.0",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",

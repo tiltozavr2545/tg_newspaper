@@ -1,14 +1,15 @@
-"""Страницы консоли для Этапа 6: онбординг читателя, опрос после номера и
-страница сравнения порядка читателя с порядком модели.
+"""Console pages for Stage 6: reader onboarding, the post-issue survey, and
+the page comparing the reader's ranking against the model's.
 
-Вёрстка — тем же подходом, что и report_html.py (общий STYLE + небольшая
-добавка ниже, без внешних CSS/JS). Чистые функции "данные -> HTML": ничего не
-читают из БД и не знают про HTTP, поэтому страницы можно смотреть и проверять
-отдельно от консоли.
+Markup follows the same approach as report_html.py (a shared STYLE plus a
+small addition below, no external CSS/JS). Pure "data -> HTML" functions:
+they never read from the DB and know nothing about HTTP, so pages can be
+viewed and tested independently of the console.
 
-Ранжирование — обычные <select> 1..n, а не перетаскивание: без JS-зависимостей
-и одинаково работает везде; уникальность мест проверяет сервер (при ошибке
-форма возвращается с сохранёнными ответами и сообщением).
+Ranking uses plain <select> dropdowns numbered 1..n, not drag-and-drop: no
+JS dependencies, and it works the same everywhere; the server checks that
+ranks are unique (on error, the form is returned with the saved answers and
+a message).
 """
 
 from __future__ import annotations
@@ -51,15 +52,16 @@ EXTRA_STYLE = """
 
 @dataclass(frozen=True)
 class ItemView:
-    """Пост опроса вместе с текстом для показа (напечатанный — для постов
-    номера, исходный — для остальных; выбирает вызывающий)."""
+    """A survey post together with the text to display (the printed text for
+    posts that were in the issue, the original for the rest; the caller decides)."""
     item: SurveyItem
     text: str
 
 
 def rank_field_name(survey_id: int, item: SurveyItem) -> str:
-    """Имя поля формы с местом поста. Ключ — (опрос, позиция показа): позиция
-    уникальна в опросе, а канал/номер в имени поля не нужны и неудобны."""
+    """The form field name holding a post's rank. Keyed by (survey, display
+    position): the position is unique within a survey, and the channel/id
+    would be unnecessary and inconvenient in a field name."""
     return f"rank_{survey_id}_{item.shown_position}"
 
 
@@ -84,13 +86,14 @@ def _ranking_block_html(
     selected: dict[str, str],
     show_errors: bool,
 ) -> str:
-    """Список постов с <select> мест. Оценки модели и признак "был в номере"
-    ЗДЕСЬ не показываются: и то и другое подталкивает читателя (напечатано —
-    значит, вроде бы важно), а смысл опроса — его собственное мнение. Всё это
-    открывается на странице сравнения после отправки."""
+    """The list of posts with rank <select> dropdowns. The model's scores and
+    the "was in the issue" flag are deliberately NOT shown here: both would
+    bias the reader (printed must mean important), and the point of the
+    survey is their own opinion. All of that is revealed on the comparison
+    page after submission."""
     n = len(views)
-    # Выбранные места ЭТОГО опроса — дубликаты ищем только среди них (в
-    # онбординге три раунда на одной странице, у каждого свои места 1..n).
+    # Selected ranks for THIS survey only — duplicates are checked only among
+    # these (onboarding has three rounds on one page, each with its own 1..n ranks).
     own_values = [selected.get(rank_field_name(survey_id, v.item), "") for v in views]
     rows = []
     for view in views:
@@ -121,10 +124,11 @@ def render_onboarding_page(
     selected: dict[str, str] | None = None,
     error: str | None = None,
 ) -> str:
-    """Форма онбординга: два текстовых поля и до трёх раундов ранжирования на
-    одной странице (одна отправка — проще пошагового мастера, а состояние
-    между шагами хранить негде и незачем). rounds — [(survey_id, посты)];
-    пустой список — в базе нет классифицированных постов, раунды пропущены."""
+    """The onboarding form: two text fields and up to three ranking rounds on
+    one page (a single submission is simpler than a step-by-step wizard, and
+    there's nowhere convenient to keep state between steps anyway). rounds is
+    [(survey_id, posts)]; an empty list means there are no classified posts
+    in the DB yet, so the rounds are skipped."""
     selected = selected or {}
     if rounds:
         rounds_html = "".join(
@@ -215,9 +219,10 @@ def _verdict(value: float | None) -> str:
 
 
 def render_result_page(survey: Survey, views: list[ItemView]) -> str:
-    """Сравнение порядка читателя и модели. Здесь, уже после отправки, можно
-    показать оценки модели и пометки "был в номере / выброшен": ответ дан, и
-    подсказка больше не влияет на него."""
+    """Compares the reader's order against the model's. Here, after
+    submission, it's safe to show the model's scores and the "was in the
+    issue / dropped" labels: an answer has already been given, so the hint
+    can no longer bias it."""
     rows_data = sorted(views, key=lambda v: v.item.user_rank or 0)
     scores = [v.item.model_score for v in rows_data]
     model_place = model_ranks(scores)

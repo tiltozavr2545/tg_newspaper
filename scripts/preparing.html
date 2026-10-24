@@ -16,11 +16,13 @@
   <p>Эта страница сама перейдёт в консоль, как только всё будет готово. Закрывать её не нужно.</p>
   <p class="muted" id="status"></p>
 <script>
-  // Шаблон: __PORT__ подставляет лаунчер (launch.sh / launch.ps1). Консоль на
-  // другом origin, поэтому no-cors: ответ непрозрачный, но промис выполняется
-  // (успех = сервер поднялся), а при отказе соединения — бросает ошибку.
-  // Проверка идёт на 127.0.0.1 (localhost на Windows сначала резолвится в IPv6, а
-  // консоль слушает IPv4), переход в браузере — на localhost, как и раньше.
+  // Template: the launcher (launch.sh / launch.ps1) substitutes __PORT__. The
+  // console is on a different origin, hence no-cors: the response is opaque,
+  // but the promise resolves (success = the server came up), while a
+  // connection failure throws an error.
+  // The probe goes to 127.0.0.1 (on Windows, localhost resolves to IPv6
+  // first, while the console listens on IPv4); the browser navigates to
+  // localhost, as before.
   var probe = "http://127.0.0.1:__PORT__/";
   var target = "http://localhost:__PORT__/";
   var tries = 0;

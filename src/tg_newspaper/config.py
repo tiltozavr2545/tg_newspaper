@@ -1,4 +1,4 @@
-"""Загрузка конфигурации: переменные окружения и список каналов."""
+"""Configuration loading: environment variables and the channel list."""
 
 from __future__ import annotations
 
@@ -12,86 +12,88 @@ from dotenv import load_dotenv
 from .youtube import YoutubeChannel
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Базовый каталог данных пользователя: .env, channels.yaml, БД, фото, сессия.
-# Установленная из релиза программа заменяется при обновлении (а на macOS может
-# лежать на read-only томе из-за App Translocation), поэтому лаунчеры релиза
-# задают TG_NEWSPAPER_HOME на каталог пользователя. Без переменной — репозиторий,
-# то есть поведение разработки не меняется.
+# Base directory for user data: .env, channels.yaml, DB, photos, session.
+# A program installed from a release gets replaced on update (and on macOS it
+# may sit on a read-only volume due to App Translocation), so release
+# launchers point TG_NEWSPAPER_HOME at the user's directory. Without the
+# variable it's the repo, so dev behavior is unchanged.
 HOME_ENV = "TG_NEWSPAPER_HOME"
 
 
 def home_dir() -> Path:
-    """Каталог данных пользователя: TG_NEWSPAPER_HOME или корень репозитория.
-    Читается при каждом вызове (не константой), чтобы тесты и лаунчеры могли
-    менять окружение после импорта."""
+    """User data directory: TG_NEWSPAPER_HOME or the repo root.
+    Read on every call (not cached as a constant) so tests and launchers can
+    change the environment after import."""
     override = os.environ.get(HOME_ENV)
     return Path(override) if override else REPO_ROOT
 
 
-# Пути по умолчанию в режиме разработки (HOME не задан). Для реальной работы
-# используйте env_path()/channels_path()/db_path()/media_dir() — они учитывают
-# TG_NEWSPAPER_HOME и точечные переопределения.
+# Default paths in dev mode (HOME not set). For real use, call
+# env_path()/channels_path()/db_path()/media_dir() instead — they account for
+# TG_NEWSPAPER_HOME and the individual overrides.
 ENV_PATH = REPO_ROOT / ".env"
 CHANNELS_PATH = REPO_ROOT / "config" / "channels.yaml"
 DB_PATH = REPO_ROOT / "data" / "tg_newspaper.db"
-# Переменная окружения, переопределяющая путь к БД. Нужна для ручной проверки
-# консоли на копии базы (чтобы эксперименты с опросами не трогали рабочую
-# data/tg_newspaper.db); в обычной работе не задаётся.
+# Environment variable overriding the DB path. Needed for manually testing the
+# console against a copy of the database (so experimenting with surveys doesn't
+# touch the live data/tg_newspaper.db); not set in normal operation.
 DB_PATH_ENV = "TG_NEWSPAPER_DB"
-# Аналогичные переопределения для мастера настройки (консоль, scripts/console.py):
-# где лежат .env, список каналов и файл сессии Telethon. Нужны, чтобы проверять
-# мастер во временном каталоге и не трогать реальные секреты; в обычной работе
-# не задаются.
-#   TG_NEWSPAPER_ENV          — путь к файлу .env (по умолчанию <репозиторий>/.env)
-#   TG_NEWSPAPER_CHANNELS     — путь к channels.yaml (по умолчанию config/channels.yaml)
-#   TG_NEWSPAPER_SESSION_DIR  — каталог файла сессии (по умолчанию — TG_NEWSPAPER_HOME,
-#                               а без него — текущий каталог, как у Telethon, когда
-#                               задано только имя сессии)
+# Similar overrides for the setup wizard (console, scripts/console.py):
+# where .env, the channel list, and the Telethon session file live. Needed to
+# test the wizard in a temp directory without touching real secrets; not set
+# in normal operation.
+#   TG_NEWSPAPER_ENV          — path to the .env file (default: <repo>/.env)
+#   TG_NEWSPAPER_CHANNELS     — path to channels.yaml (default: config/channels.yaml)
+#   TG_NEWSPAPER_SESSION_DIR  — directory for the session file (default: TG_NEWSPAPER_HOME,
+#                               or without it, the current directory, same as Telethon's
+#                               default when only a session name is given)
 ENV_FILE_ENV = "TG_NEWSPAPER_ENV"
 CHANNELS_PATH_ENV = "TG_NEWSPAPER_CHANNELS"
 SESSION_DIR_ENV = "TG_NEWSPAPER_SESSION_DIR"
-# Фото постов скачиваются в media_dir() при сборе (collector.py) — путь на файл
-# живёт дальше в pipeline_outcomes.photo_path (storage.py), сами файлы вне БД.
+# Post photos are downloaded into media_dir() during collection (collector.py) —
+# the file path then lives in pipeline_outcomes.photo_path (storage.py); the
+# files themselves stay outside the DB.
 
-# Период сбора — всегда фиксированные последние сутки от момента запуска.
-# Наверстывание пропущенных дней сознательно не делается: не напечаталось — значит не напечаталось,
-# следующий прогон всё равно заберёт только последние сутки.
+# Collection period is always a fixed last-24-hours window from the run's start.
+# Catching up on missed days is deliberately not done: if it didn't get printed,
+# it didn't get printed — the next run will still only pick up the last 24 hours.
 LOOKBACK_HOURS = 24
 
 
 def env_path() -> Path:
-    """Путь к .env с учётом переопределения TG_NEWSPAPER_ENV."""
+    """Path to .env, honoring the TG_NEWSPAPER_ENV override."""
     override = os.environ.get(ENV_FILE_ENV)
     return Path(override) if override else home_dir() / ".env"
 
 
 def channels_path() -> Path:
-    """Путь к channels.yaml с учётом переопределения TG_NEWSPAPER_CHANNELS."""
+    """Path to channels.yaml, honoring the TG_NEWSPAPER_CHANNELS override."""
     override = os.environ.get(CHANNELS_PATH_ENV)
     return Path(override) if override else home_dir() / "config" / "channels.yaml"
 
 
 def db_path() -> Path:
-    """Путь к БД с учётом переопределения TG_NEWSPAPER_DB."""
+    """Path to the DB, honoring the TG_NEWSPAPER_DB override."""
     override = os.environ.get(DB_PATH_ENV)
     return Path(override) if override else home_dir() / "data" / "tg_newspaper.db"
 
 
 def media_dir() -> Path:
-    """Каталог скачанных фото постов (рядом с данными пользователя)."""
+    """Directory for downloaded post photos (alongside the user's data)."""
     return home_dir() / "data" / "media"
 
 
 def session_base(session_name: str) -> str:
-    """Аргумент `session` для TelegramClient: имя сессии, а при заданном
-    TG_NEWSPAPER_SESSION_DIR — полный путь без суффикса `.session` (его
-    добавляет сам Telethon). Без переопределения возвращает имя как есть —
-    поведение прежнее (файл создаётся в текущем каталоге)."""
+    """The `session` argument for TelegramClient: the session name, or, when
+    TG_NEWSPAPER_SESSION_DIR is set, the full path without the `.session`
+    suffix (Telethon adds that itself). Without the override, returns the
+    name as-is — unchanged behavior (the file is created in the current
+    directory)."""
     override = os.environ.get(SESSION_DIR_ENV)
     if override:
         return str(Path(override) / session_name)
-    # Релиз: сессия лежит в каталоге пользователя, а не в cwd (cwd там — каталог
-    # приложения, который заменяется при обновлении).
+    # Release build: the session lives in the user's directory, not cwd (cwd
+    # there is the app directory, which gets replaced on update).
     if os.environ.get(HOME_ENV):
         return str(home_dir() / session_name)
     return session_name
@@ -105,15 +107,17 @@ class Config:
     channels: list[str]
     db_path: Path
     media_dir: Path
-    # Gemini — нужен только для LLM-классификации (Этап 2 п.2), не для сбора/эвристик.
-    # Пустой api_key — нормально для остального пайплайна; GeminiClassifier сам
-    # откажет с понятной ошибкой, если его создать без ключа.
+    # Gemini — needed only for LLM classification (Stage 2 item 2), not for
+    # collection/heuristics. An empty api_key is fine for the rest of the
+    # pipeline; GeminiClassifier itself fails with a clear error if created
+    # without a key.
     gemini_api_key: str
     gemini_model: str
-    gemini_base_url: str  # прокси к Gemini (Cloudflare Worker); пусто = напрямую
-    # Этап 7: рубрики (секции мозаики) и YouTube-каналы для блока "Новые видео".
-    # Канал без рубрики в rubric_by_channel отсутствует; rubric_order — порядок
-    # секций в номере (как в channels.yaml). Пустые — номер без секций, как раньше.
+    gemini_base_url: str  # proxy to Gemini (Cloudflare Worker); empty = direct
+    # Stage 7: rubrics (mosaic sections) and YouTube channels for the "New
+    # videos" block. A channel with no rubric is absent from rubric_by_channel;
+    # rubric_order is the order of sections in the issue (as in channels.yaml).
+    # Empty — issue with no sections, as before.
     rubric_by_channel: dict[str, str] = field(default_factory=dict)
     rubric_order: list[str] = field(default_factory=list)
     youtube_channels: list[YoutubeChannel] = field(default_factory=list)
@@ -121,9 +125,9 @@ class Config:
 
 @dataclass
 class ChannelsFile:
-    """Содержимое channels.yaml: рубрики (в порядке файла), каналы без рубрики и
-    YouTube-каналы. Единственное место разбора формата — им пользуются
-    load_config, мастер настройки и compute_status."""
+    """Contents of channels.yaml: rubrics (in file order), channels without a
+    rubric, and YouTube channels. The single place that parses the format —
+    used by load_config, the setup wizard, and compute_status."""
 
     rubrics: list[tuple[str, list[str]]] = field(default_factory=list)
     loose: list[str] = field(default_factory=list)
@@ -131,7 +135,7 @@ class ChannelsFile:
 
     @property
     def channels(self) -> list[str]:
-        """Все телеграм-каналы без дублей: сначала рубрики по порядку, затем без рубрики."""
+        """All Telegram channels without duplicates: rubrics in order first, then unrubricked ones."""
         seen: set[str] = set()
         out: list[str] = []
         for ch in [c for _, chs in self.rubrics for c in chs] + self.loose:
@@ -146,7 +150,7 @@ class ChannelsFile:
         taken: set[str] = set()
         for name, chs in self.rubrics:
             for ch in chs:
-                if ch.lower() not in taken:  # канал в двух рубриках — первая выигрывает
+                if ch.lower() not in taken:  # channel in two rubrics — the first one wins
                     taken.add(ch.lower())
                     result[ch] = name
         return result
@@ -157,9 +161,10 @@ class ChannelsFile:
 
 
 def parse_channels_data(data: object) -> ChannelsFile:
-    """Разбирает загруженный YAML. Старый формат (только `channels: [...]`) —
-    без рубрик. Дубли каналов (без учёта регистра) схлопываются: остаётся
-    первое упоминание. Кривые записи молча пропускаются — файл правят и руками."""
+    """Parses the loaded YAML. The old format (just `channels: [...]`) has no
+    rubrics. Duplicate channels (case-insensitive) collapse: the first
+    mention is kept. Malformed entries are silently skipped — the file is
+    also edited by hand."""
     if not isinstance(data, dict):
         return ChannelsFile()
     seen: set[str] = set()
@@ -182,7 +187,7 @@ def parse_channels_data(data: object) -> ChannelsFile:
         existing = next((i for i, (n, _) in enumerate(rubrics) if n == name), None)
         if existing is None:
             rubrics.append((name, chs))
-        else:  # одноимённые рубрики сливаем
+        else:  # merge rubrics with the same name
             rubrics[existing][1].extend(chs)
     loose = take(data.get("channels"))
     youtube: list[YoutubeChannel] = []
@@ -195,7 +200,7 @@ def parse_channels_data(data: object) -> ChannelsFile:
 
 
 def read_channels_file(path: Path) -> ChannelsFile:
-    """channels.yaml -> ChannelsFile; бросает OSError/yaml.YAMLError, если файла нет или он битый."""
+    """channels.yaml -> ChannelsFile; raises OSError/yaml.YAMLError if the file is missing or broken."""
     return parse_channels_data(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 

@@ -1,8 +1,8 @@
-"""Общая логика распознавания и ожидания временных ошибок Gemini API
-(429 квота/RPM, 503 перегрузка и т.п.) — используется и LLM-классификацией
-(classifier.py), и эмбеддингами (paraphrase_dedup.py): у бесплатного тарифа
-жёсткие лимиты по RPM/RPD, транзиентные ошибки там норма, а не исключение
-(см. классификатор и историю багов вокруг него)."""
+"""Shared logic for recognizing and waiting out transient Gemini API errors
+(429 quota/RPM, 503 overload, etc.) — used by both LLM classification
+(classifier.py) and embeddings (paraphrase_dedup.py): the free tier has
+strict RPM/RPD limits, so transient errors are the norm there, not the
+exception (see the classifier and the history of bugs around it)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ MAX_RETRY_DELAY_SECONDS = 60.0
 
 
 def is_transient(exc: Exception) -> bool:
-    """Временная ошибка — есть смысл подождать и попробовать снова."""
+    """Transient error — worth waiting and trying again."""
     code = getattr(exc, "code", None)
     if code in (429, 500, 502, 503, 504):
         return True
@@ -29,8 +29,8 @@ def is_transient(exc: Exception) -> bool:
 
 
 def retry_delay_seconds(exc: Exception) -> float:
-    """Достаёт retryDelay из тела ответа API (например, '16s' в RetryInfo);
-    если распарсить не удалось — разумная пауза по умолчанию."""
+    """Extracts retryDelay from the API response body (e.g. '16s' in RetryInfo);
+    if parsing fails, falls back to a reasonable default delay."""
     details = getattr(exc, "details", None)
     try:
         error_details = details.get("error", {}).get("details", [])

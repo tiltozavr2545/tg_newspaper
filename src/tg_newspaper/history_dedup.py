@@ -1,26 +1,26 @@
-"""Дедупликация кандидатов текущего прогона против уже опубликованного —
-Этап 2 п.4. "Уже опубликованное" — это то, что РЕАЛЬНО вошло в собранные
-номера (storage.issue_posts, с напечатанным текстом после возможного
-сокращения), а не то, что прошло отбор (pipeline_outcomes.included=1):
-часть прошедших отбор постов не влезает в номер и выбрасывается, и такая
-новость не должна блокироваться завтра как "уже была в газете". Окно —
-последние несколько СОБРАННЫХ НОМЕРОВ (не дней и не прогонов: проект
-запускается по кнопке, календарное окно не имеет смысла, см. AGENTS.md
-"Запуск", а прогоны без собранного номера не должны вытеснять реально
-напечатанное) — так ловятся новости, которые канал репостит или
-пересказывает спустя несколько номеров. В БД, созданной до появления
-issue_posts, история пуста до первой сборки номера.
+"""Deduplicating the current run's candidates against what's already been
+published — Stage 2 item 4. "Already published" means what ACTUALLY ended up
+in assembled issues (storage.issue_posts, with the printed text after any
+shortening), not what merely passed selection (pipeline_outcomes.included=1):
+some posts that pass selection don't fit in the issue and get dropped, and
+such news shouldn't be blocked tomorrow as "already in the paper". The window
+is the last several ASSEMBLED ISSUES (not days, not runs: the project is
+started by a button, so a calendar window makes no sense, see AGENTS.md
+"Running" — and runs with no assembled issue shouldn't push out what was
+actually printed) — this catches news that a channel reposts or retells a
+few issues later. In a DB created before issue_posts existed, history is
+empty until the first issue is assembled.
 
-Асимметрично по конструкции: уже опубликованное (history) никогда не
-меняется и не исключается — оно уже напечатано. Продолжение сюжета с новыми
-фактами проходит: кандидат исключается, только если ВСЕ его факты уже были
-напечатаны (решает LLM, resolve_paraphrase_batch). Может исключаться только
-новый кандидат, если он дублирует что-то из history.
+Asymmetric by design: already-published content (history) is never changed
+or excluded — it's already been printed. A story continuing with new facts
+passes through: a candidate is excluded only if ALL of its facts were
+already printed (decided by the LLM, resolve_paraphrase_batch). Only a new
+candidate can be excluded, and only if it duplicates something from history.
 
-Переиспользует ровно те же механизмы, что дедупликация внутри одного
-прогона (dedup.py, paraphrase_dedup.py, classifier.resolve_paraphrase_batch)
-— тот же промпт, та же логика "минимального покрывающего набора фактов",
-просто применённая к смешанным группам [кандидат, ...похожие из истории].
+Reuses exactly the same mechanisms as deduplication within a single run
+(dedup.py, paraphrase_dedup.py, classifier.resolve_paraphrase_batch) — the
+same prompt, the same "minimal covering set of facts" logic, just applied to
+mixed groups [candidate, ...similar items from history].
 """
 
 from __future__ import annotations
@@ -32,10 +32,11 @@ from .dedup import COPYPASTE_SIMILARITY_THRESHOLD, normalize
 from .paraphrase_dedup import SIMILARITY_THRESHOLD, GeminiEmbedder, _cosine_similarity
 from .storage import Post
 
-# Столько последних СОБРАННЫХ НОМЕРОВ сравниваем — см. implementation-plan.md,
-# Этап 2 п.4 (в брифе было "5 дней", после перехода на запуск по кнопке —
-# "5 прогонов", после ревью — 5 реально собранных номеров: прогоны, по
-# которым номер не собирали, в окно не считаются).
+# This many of the latest ASSEMBLED ISSUES are compared against — see
+# implementation-plan.md, Stage 2 item 4 (the brief said "5 days", after
+# switching to button-triggered runs it became "5 runs", and after review,
+# 5 actually assembled issues: runs for which no issue was assembled don't
+# count toward the window).
 HISTORY_RUNS_WINDOW = 5
 
 
@@ -60,15 +61,15 @@ def filter_against_history(
     classifier: GeminiClassifier,
     embedder: GeminiEmbedder,
 ) -> tuple[list[Post], list[tuple[Post, str]]]:
-    """Возвращает (кандидаты без дублей уже опубликованного, [(исключённый
-    кандидат, причина), ...]). history не меняется и не участвует в
-    исключениях — только кандидаты."""
+    """Returns (candidates with no duplicates of already-published content,
+    [(excluded candidate, reason), ...]). history is never changed and never
+    participates in exclusions — only candidates do."""
     if not history or not candidates:
         return candidates, []
 
     excluded: list[tuple[Post, str]] = []
 
-    # 1. Копипаст-эвристика — дёшево, без LLM.
+    # 1. Copy-paste heuristic — cheap, no LLM.
     remaining: list[Post] = []
     for c in candidates:
         match = _copypaste_match(c.text, history)
@@ -82,16 +83,16 @@ def filter_against_history(
     if not remaining:
         return [], excluded
 
-    # 2. Черновой фильтр по эмбеддингам + подтверждение LLM — та же логика,
-    #    что для дублей-пересказов внутри одного прогона (paraphrase_dedup.py):
-    #    сходство эмбеддингов путает "тот же факт" с "просто похожая тема",
-    #    окончательное решение — за LLM (resolve_paraphrase_batch).
+    # 2. Rough embedding-based filter + LLM confirmation — the same logic as
+    #    for retelling-duplicates within a single run (paraphrase_dedup.py):
+    #    embedding similarity confuses "the same fact" with "just a similar
+    #    topic", the final decision is up to the LLM (resolve_paraphrase_batch).
     texts = [p.text.strip() for p in remaining] + [p.text.strip() for p in history]
     vectors = embedder.embed(texts)
     candidate_vectors = vectors[: len(remaining)]
     history_vectors = vectors[len(remaining) :]
 
-    # group[0] — кандидат, group[1:] — похожие на него посты из history.
+    # group[0] is the candidate, group[1:] are its similar posts from history.
     groups: list[list[Post]] = []
     group_candidates: list[Post] = []
     for i, cvec in enumerate(candidate_vectors):
@@ -116,9 +117,9 @@ def filter_against_history(
         for local_idx, group in enumerate(batch):
             decision = by_cluster.get(local_idx)
             if decision is None:
-                continue  # нет ответа — как и везде в classifier.py, оставляем
-            # Кандидат — всегда позиция 0 внутри своей группы. Если LLM не
-            # включила его в keep_indices — все его факты уже есть в history.
+                continue  # no answer — as everywhere in classifier.py, keep it
+            # The candidate is always position 0 within its group. If the LLM
+            # didn't include it in keep_indices — all its facts are already in history.
             if 0 not in decision.keep_indices:
                 candidate = batch_candidates[local_idx]
                 matched = group[1]

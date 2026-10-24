@@ -1,10 +1,10 @@
-"""Одноразовая генерация иконок приложения в packaging/icons/ (ассеты коммитятся,
-CI их не рисует). Запуск на macOS: uv run python scripts/make_icons.py
+"""One-off generation of the app icons into packaging/icons/ (the assets are
+committed, CI doesn't draw them). Run on macOS: uv run python scripts/make_icons.py
 
-  icon-1024.png — рисуется в Chromium из HTML (Playwright уже в зависимостях);
-  AppIcon.icns  — sips + iconutil (есть только в macOS);
-  app.ico       — ICO-контейнер с PNG внутри, собран struct'ом без Pillow
-                  (Windows Vista+ понимает PNG в ICO).
+  icon-1024.png — drawn in Chromium from HTML (Playwright is already a dependency);
+  AppIcon.icns  — sips + iconutil (available only on macOS);
+  app.ico       — an ICO container with a PNG inside, assembled with struct
+                  without Pillow (Windows Vista+ understands PNG inside ICO).
 """
 
 from __future__ import annotations
@@ -61,8 +61,8 @@ def main() -> None:
             sips_resize(png, s, f)
             images.append((s, f.read_bytes()))
 
-    # ICONDIR (6 байт) + по ICONDIRENTRY (16 байт) на размер + данные PNG.
-    # Размер 256 в поле ширины/высоты кодируется нулём.
+    # ICONDIR (6 bytes) + one ICONDIRENTRY (16 bytes) per size + PNG data.
+    # Size 256 in the width/height field is encoded as zero.
     header = struct.pack("<HHH", 0, 1, len(images))
     offset = 6 + 16 * len(images)
     entries, blobs = b"", b""

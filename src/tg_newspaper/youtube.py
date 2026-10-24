@@ -1,8 +1,8 @@
-"""YouTube-каналы для блока "Новые видео" в конце номера (Этап 7 п.2).
+"""YouTube channels for the "New videos" block at the end of the issue (Stage 7 item 2).
 
-Источник — публичный RSS канала (`/feeds/videos.xml?channel_id=UC...`), без
-API-ключа. Модуль не импортирует config.py (config.py импортирует отсюда
-YoutubeChannel), пути передаются параметрами."""
+Source — the channel's public RSS (`/feeds/videos.xml?channel_id=UC...`), no
+API key needed. The module doesn't import config.py (config.py imports
+YoutubeChannel from here), paths are passed as parameters."""
 
 from __future__ import annotations
 
@@ -18,32 +18,33 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class YoutubeChannel:
-    """Отслеживаемый YouTube-канал из channels.yaml (ключ `youtube`)."""
+    """A tracked YouTube channel from channels.yaml (key `youtube`)."""
 
-    channel_id: str  # UC... — по нему строится RSS
-    title: str  # название канала на момент добавления (для консоли и номера)
-    source: str  # как ввёл пользователь (@handle, ссылка, UC...) — показывается в мастере
+    channel_id: str  # UC... — used to build the RSS URL
+    title: str  # channel name at the time it was added (for the console and the issue)
+    source: str  # how the user entered it (@handle, link, UC...) — shown in the wizard
 
 
 @dataclass(frozen=True)
 class YoutubeVideo:
-    """Новое видео за период прогона — то, что печатается в блоке "Новые видео"."""
+    """A new video from the run period — what gets printed in the "New videos" block."""
 
     video_id: str
     channel_id: str
     channel_title: str
     title: str
     published_at: datetime  # aware, UTC
-    thumbnail_path: str | None  # локальный файл превью; None — не скачалось
+    thumbnail_path: str | None  # local thumbnail file; None if it didn't download
 
 
 logger = logging.getLogger(__name__)
 
 FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-THUMB_URL = "https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"  # 320x180: хватает для печати в блоке
+THUMB_URL = "https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"  # 320x180: enough for printing in the block
 TIMEOUT_SECONDS = 10
-# Без браузерного User-Agent и cookie SOCS страница канала отдаёт окно согласия
-# с куками вместо разметки канала — id из неё не достать.
+# Without a browser-like User-Agent and the SOCS cookie, the channel page
+# returns a cookie-consent screen instead of the channel markup — the id
+# can't be extracted from it.
 _PAGE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -61,19 +62,19 @@ _HANDLE = re.compile(r"@[A-Za-z0-9_.\-]{3,}")
 
 
 class YoutubeError(RuntimeError):
-    """Ошибка резолва/загрузки с готовым для человека текстом."""
+    """A resolve/fetch error with a human-ready message."""
 
 
 def _get(url: str, headers: dict[str, str] | None = None) -> bytes:
     req = urllib.request.Request(url, headers=headers or {"User-Agent": _PAGE_HEADERS["User-Agent"]})
-    with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:  # noqa: S310 (https, свои URL)
+    with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:  # noqa: S310 (https, our own URLs)
         return resp.read()
 
 
 def parse_youtube_input(raw: str) -> tuple[str | None, str | None]:
-    """Запись пользователя -> (channel_id, page_url). Для UC... и /channel/UC...
-    id известен сразу (page_url=None); для @handle, /c/, /user/ нужна страница
-    канала. (None, None) — не распознано."""
+    """User input -> (channel_id, page_url). For UC... and /channel/UC..., the
+    id is known right away (page_url=None); for @handle, /c/, /user/ the
+    channel page is needed. (None, None) means it wasn't recognized."""
     item = raw.strip().strip("<>").strip()
     if _CHANNEL_ID.fullmatch(item):
         return item, None
@@ -109,8 +110,8 @@ def _fetch_feed(channel_id: str) -> ET.Element:
 
 
 def resolve_channel(raw: str) -> YoutubeChannel:
-    """Запись пользователя -> YoutubeChannel (id + название из RSS). Бросает
-    YoutubeError с понятным текстом; RSS заодно подтверждает, что канал есть."""
+    """User input -> YoutubeChannel (id + title from RSS). Raises YoutubeError
+    with a clear message; the RSS fetch also confirms the channel exists."""
     channel_id, page_url = parse_youtube_input(raw)
     if channel_id is None and page_url is None:
         raise YoutubeError("не похоже на YouTube-канал (нужны @handle, ссылка или UC...)")
@@ -139,7 +140,7 @@ def _download_thumb(video_id: str, thumbs_dir: Path) -> str | None:
         thumbs_dir.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return str(target)
-    except Exception as exc:  # noqa: BLE001 (превью необязательно: видео идёт и без него)
+    except Exception as exc:  # noqa: BLE001 (the thumbnail is optional: the video works without it)
         logger.warning("YouTube: превью %s не скачалось: %s", video_id, exc)
         return None
 
@@ -153,7 +154,7 @@ def _channel_videos(channel: YoutubeChannel, since: datetime, until: datetime, t
         published = (entry.findtext("a:published", default="", namespaces=_NS) or "").strip()
         if not video_id or not published:
             continue
-        # Шортсы в газете не нужны: у них ссылка вида /shorts/<id>.
+        # Shorts aren't needed in the newspaper: their link looks like /shorts/<id>.
         if any("/shorts/" in (link.get("href") or "") for link in entry.findall("a:link", _NS)):
             continue
         try:
@@ -179,9 +180,10 @@ def _channel_videos(channel: YoutubeChannel, since: datetime, until: datetime, t
 def fetch_new_videos(
     channels: list[YoutubeChannel], since: datetime, until: datetime, thumbs_dir: Path
 ) -> tuple[list[YoutubeVideo], list[str]]:
-    """Новые видео каналов за [since, until] (новые первыми) и ошибки по каналам.
-    Сбой одного канала не мешает остальным и не бросает исключение: блок видео
-    вторичен, номер не должен из-за него не собраться."""
+    """New videos from the channels within [since, until] (newest first) and
+    per-channel errors. A failure in one channel doesn't affect the others
+    and doesn't raise an exception: the video block is secondary, and the
+    issue shouldn't fail to assemble because of it."""
     videos: list[YoutubeVideo] = []
     errors: list[str] = []
     for channel in channels:

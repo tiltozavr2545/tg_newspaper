@@ -1,14 +1,15 @@
-"""Эвристика на дословные/близкие копипасты — до обращения к LLM.
+"""Heuristic for verbatim/near-verbatim copy-pastes — runs before calling the LLM.
 
-Ловит только текстуальное совпадение (репост, копипаста слово-в-слово
-или с косметическими правками). Пересказ той же новости другими
-словами эта эвристика не поймает — это paraphrase_dedup.py (эмбеддинги).
-Окно сравнения — только кандидаты одного прогона (одних суток);
-скользящее окно в 5 дней уже опубликованного — Этап 2 п.4, отдельно.
+Only catches textual matches (reposts, word-for-word copy-pastes, or ones
+with cosmetic edits). A retelling of the same news in different words is
+not caught by this heuristic — that's paraphrase_dedup.py (embeddings).
+The comparison window covers only candidates from a single run (one day);
+the 5-day rolling window over already-published posts is Stage 2 item 4,
+handled separately.
 
-Только группирует похожие посты — какой из них оставить, решает
-classifier.GeminiClassifier.choose_best_versions (см. там же, почему
-"самый ранний"/"самый длинный" не подошли).
+Only groups similar posts — which one to keep is decided by
+classifier.GeminiClassifier.choose_best_versions (see there for why
+"earliest"/"longest" didn't work).
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from rapidfuzz import fuzz
 
 from .storage import Post
 
-# Порог похожести нормализованного текста (rapidfuzz.token_sort_ratio, 0-100),
-# выше которого пара постов считается копипастой, а не разными новостями.
+# Normalized-text similarity threshold (rapidfuzz.token_sort_ratio, 0-100)
+# above which a pair of posts is considered a copy-paste rather than distinct news.
 COPYPASTE_SIMILARITY_THRESHOLD = 85
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -37,13 +38,13 @@ def normalize(text: str) -> str:
 
 
 def find_copypaste_clusters(posts: list[Post]) -> list[list[Post]]:
-    """Группирует посты по текстуальному сходству (копипаста/репост).
+    """Groups posts by textual similarity (copy-paste/repost).
 
-    Каждый пост попадает ровно в один кластер; посты без дублей — в
-    кластер размера 1.
+    Each post ends up in exactly one cluster; posts without duplicates
+    end up in a cluster of size 1.
     """
     normalized = [normalize(post.text) for post in posts]
-    clusters: list[list[int]] = []  # индексы posts
+    clusters: list[list[int]] = []  # indices into posts
 
     for i, text in enumerate(normalized):
         placed = False

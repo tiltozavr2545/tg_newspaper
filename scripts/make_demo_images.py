@@ -1,12 +1,13 @@
-"""Одноразовый скрипт: демо-картинки для README из ВЫДУМАННЫХ постов.
+"""One-off script: demo images for the README from MADE-UP posts.
 
-Реальные номера содержат посты чужих каналов и их фото — в публичный репозиторий
-их класть нельзя. Здесь пайплайн вёрстки (layout.render_pages) запускается на
-синтетических постах без Telegram и Gemini: анонсы обложки — заглушка, «фото» —
-нарисованные SVG-картинки. Результат: docs/images/demo-cover.png, demo-page.png
-(обе — склейки двух полос A4 в один лист A3, шириной 1400 px).
+Real issues contain posts from other people's channels and their photos — we
+can't put those in the public repo. Here the layout pipeline
+(layout.render_pages) runs on synthetic posts with no Telegram and no Gemini:
+cover teasers are a stub, "photos" are drawn SVG images. Result:
+docs/images/demo-cover.png, demo-page.png (both are two A4 pages glued into
+one A3 sheet, 1400 px wide).
 
-Запуск: uv run python scripts/make_demo_images.py
+Run: uv run python scripts/make_demo_images.py
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from tg_newspaper.storage import Post
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "images"
 
-# (канал, заголовок, текст, важность 1-5, фото: None | палитра)
+# (channel, headline, text, importance 1-5, photo: None | palette)
 NEWS = [
     ("demo_city", "В городском парке откроется летняя библиотека под открытым небом",
      "Читальню на свежем воздухе обустроят у пруда: полсотни кресел, навес от дождя и пять тысяч книг, "
@@ -166,11 +167,11 @@ def main() -> None:
             importance[key] = imp
             if scene:
                 photo_path[key] = photos[scene]
-                # В мозаике фото печатается только при relevance 3: ставим его там, где кадр важен по смыслу.
+                # In the mosaic a photo is only printed at relevance 3: we set it where the shot matters to the meaning.
                 relevance[key] = 3 if imp == 5 or scene in ("robot", "birds", "cinema") else 2
 
         def fake_teasers(ps):
-            # Заглушка вместо Gemini: выдуманные «крикливые» анонсы.
+            # A stand-in for Gemini: made-up "shouty" teasers.
             shouts = [("КНИГИ ПОД НЕБОМ!", "Читальня у пруда откроется уже в выходные"),
                       ("ТОМАТ-СТОЙКИЙ!", "Сорт без полива три недели"),
                       ("48 ЧАСОВ БЕЗ РОЗЕТКИ", "Недорогой ноутбук с рекордной батареей"),
@@ -184,9 +185,9 @@ def main() -> None:
             photo_path_by_key=photo_path, issue_number=1, teaser_provider=fake_teasers,
         )
         OUT.mkdir(parents=True, exist_ok=True)
-        # Обложка — склеенный лист из двух полос: сшиваем их обратно в одну картинку.
+        # The cover is a glued sheet of two pages: we stitch them back into one image.
         stack(pages[0], pages[1], OUT / "demo-cover.png")
-        # Лист мозаики — тоже склеенный из двух полос (ряды переходят через шов), в той же ширине, что обложка.
+        # The mosaic sheet is also glued from two pages (rows cross the seam), at the same width as the cover.
         stack(pages[2], pages[3], OUT / "demo-page.png")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

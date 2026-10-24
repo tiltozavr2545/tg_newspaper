@@ -1,51 +1,51 @@
-# Отложенное и открытые вопросы
+# Deferred items and open questions
 
-Всё, что сознательно не решено или отложено на этапе брифа — не потому что забыто, а потому что решать это раньше, чем появятся первые реальные данные и работающий коллектор, значит гадать. Готовое сюда не попадает — как проект устроен на самом деле, будет фиксироваться в отдельной документации по ходу реализации (появится в `docs/`) и в `CHANGELOG.md`.
-
----
-
-## Закрытые вопросы (для истории)
-
-- **Где живёт агент и как печатает.** Основной домашний ПК, выполняет весь пайплайн одним прогоном и печатает по локальной сети на HP Color LaserJet Pro MFP M377dw (AirPrint/CUPS) — облачная печать для этой модели физически недоступна, HP закрыла ePrint в январе 2023 года.
-- **Способ запуска.** По требованию пользователя — кнопка "Собрать газету" в локальной консоли (тот же прогон доступен из терминала). Изначально планировалось расписание (RTC-будильник BIOS/Wake-on-LAN, автозапуск и автовыключение ПК) — пересмотрено до реализации Этапа 5 в пользу запуска по кнопке, см. "Запуск" в [project-brief.md](project-brief.md). Надёжность RTC/WoL и связанная с ней инфраструктура пробуждения ПК тем самым отпали как проблема — их просто больше нет в архитектуре.
-- **Доступ к каналам.** MTProto (Telethon) под отдельным вспомогательным Telegram-аккаунтом, заведённым специально под проект, — не основной личный аккаунт и не Bot API.
-- **Технология рендера.** HTML/CSS + headless-браузер (Playwright/Chromium) — ради многоколоночной вёрстки и типографики почти бесплатно через CSS, ценой более тяжёлой зависимости, чем у Pillow.
-- **Хранилище сырых постов.** SQLite (`data/tg_newspaper.db`, вне репозитория): таблица `posts` (канал, id сообщения, дата, текст, признак и тип вложения) с уникальностью по (канал, id сообщения) — повторный сбор за тот же период не создаёт дублей.
-- **Период сбора и наверстывание пропущенных запусков.** Период сбора — всегда фиксированные последние сутки от момента нажатия кнопки, без привязки к тому, когда и успешно ли случился предыдущий прогон. Наверстывание пропущенных запусков сознательно не делается: если пользователь не нажал кнопку день или дольше, ближайший прогон всё равно заберёт только свои последние сутки, а не восполнит пропуск. Отсюда же снят открытый вопрос "что печатать, если накопилось несколько дней" — копить их незачем.
-- **Несколько полос / многостраничная газета, затем — фиксированный объём номера.** Изначально отложено как "отложенная фича" до появления реальных данных (см. ниже). Пересмотрено на Этапе 3 дважды: сначала — прогон на реальных 67 новостях показал, что одна полоса заведомо не вмещает типичный объём, и вёрстка стала генерировать столько полос, сколько нужно, без ограничения (67 новостей → 20 портретных полос). Это оказалось неверным по существу: печатная газета — это фиксированный объём номера, а не бесконечная лента. Финальное решение — 4 альбомные (landscape) полосы A4 (`pipeline.NEWSPAPER_MAX_PAGES`; 2026-10-14: увеличено до 6 полос (+1 лист A3)), а то, что не помещается, не печатается по факту длины, а **отбирается по значимости**: LLM-оценка importance (1-5, тот же батч-вызов, что решает is_news) определяет, что печатается в первую очередь, что сокращается нейронкой ради места, а что выбрасывается из номера как проходное (`pipeline.build_newspaper`, `classifier.shorten`). См. Этап 3 п.4-5 в [implementation-plan.md](implementation-plan.md).
-- **Окно дедупликации между днями.** Одна и та же новость может всплыть в другом канале не в тот же день, а спустя несколько дней (репост/пересказ с задержкой) — при сборе только последних суток (см. пункт выше) это иначе не поймать. Дедупликация на Этапе 2 сравнивает кандидатов дня не только друг с другом, но и со скользящим окном уже напечатанных новостей за последние 5 дней — тем же механизмом (эвристика на копипасту + LLM/эмбеддинги), просто с более широким окном сравнения. Хранится для этого не текст готовой полосы, а отдельный список опубликованных новостей (заголовок/краткий текст + дата) — реализация на Этапе 2.
-- **Правило выбора версии при дубле (2026-10-14).** Оставляется самая подробная версия, степень подробности определяет LLM. Так уже работает код: `_BEST_VERSION_INSTRUCTION` (копипаст-кластеры) и `_PARAPHRASE_RESOLUTION_INSTRUCTION` (пересказы) в `classifier.py` выбирают пост, который полнее раскрывает факты (детали, имена, цифры, обстоятельства); длина сама по себе не критерий, приоритета каналов нет.
-- **Нехватка новостей (2026-10-14).** Порог `pipeline.MIN_ISSUE_NEWS` по числу новостей, прошедших в печать (`included`): ниже него номер не собирается (`assemble_issue` возвращает None), а пользователю пишется «За сутки набралось мало новостей: N (нужно хотя бы M) — номер не собран». Половина про недоступный принтер осталась в открытых вопросах.
-- **Часовой пояс и момент отсчёта суток (2026-10-14).** Окно сбора прежнее — 24 часа от нажатия кнопки; дата номера — дата конца окна прогона в часовом поясе системы, на которой идёт вёрстка. В БД время остаётся в UTC, пользователю показывается локальное.
-
-Решения и их обоснование — в [project-brief.md](project-brief.md), разделы "Механика" и "Открытые развилки".
-
-## Открытые вопросы — закрыть до или во время реализации
-
-### Недоступность принтера
-
-Что делать, если принтер в момент печати недоступен (выключен, нет бумаги, нет сети) — повторить попытку позже в рамках того же прогона, предложить пользователю запустить прогон повторно, просто залогировать и не напечатать. Относится к Этапу 4 (печать).
-
-### Формат и редактирование списка каналов
-
-В первой версии список — часть конфигурации, без интерфейса. Как он должен редактироваться в будущем (текстовый файл, который правят руками; простой веб-интерфейс) — не решено и не нужно решать до первой версии.
+Everything here is deliberately unresolved or deferred at the brief stage — not because it was forgotten, but because deciding it before there's real data and a working collector would just be guessing. Finished work doesn't belong here — how the project actually ended up working gets documented separately as implementation proceeds (to appear in `docs/`) and in `CHANGELOG.md`.
 
 ---
 
-## Отложенные фичи
+## Closed questions (kept for history)
 
-Не входят в первую версию — записаны, чтобы не потерять идею, приоритет не определён.
+- **Where the agent lives and how it prints.** The main home PC, running the whole pipeline in one pass and printing over the local network to an HP Color LaserJet Pro MFP M377dw (AirPrint/CUPS) — cloud printing is physically unavailable for this model; HP shut down ePrint in January 2023.
+- **How it's launched.** On user request — a "Assemble newspaper" button in the local console (the same run is also available from the terminal). Originally a schedule was planned (a BIOS RTC alarm/Wake-on-LAN, auto-start, auto-shutdown) — reconsidered before implementing Stage 5 in favor of button-triggered launch, see "Launch" in [project-brief.md](project-brief.md). RTC/WoL reliability and the PC-wake infrastructure that came with it thereby dropped out as a concern — they're simply no longer part of the architecture.
+- **Channel access.** MTProto (Telethon) under a separate helper Telegram account set up specifically for this project — not the main personal account, and not the Bot API.
+- **Rendering technology.** HTML/CSS + a headless browser (Playwright/Chromium) — for near-free multi-column layout and typography via CSS, at the cost of a heavier dependency than Pillow.
+- **Raw post storage.** SQLite (`data/tg_newspaper.db`, outside the repo): a `posts` table (channel, message id, date, text, attachment flag and type) unique on (channel, message id) — re-collecting the same period doesn't create duplicates.
+- **Collection window and catching up on missed runs.** The collection window is always a fixed last 24 hours from the moment the button is pressed, with no regard to when or whether the previous run succeeded. Catching up on missed runs is deliberately not done: if the user doesn't press the button for a day or longer, the next run still only grabs its own last 24 hours, rather than backfilling the gap. This also closes the open question of "what to print if several days have piled up" — there's no reason to accumulate them.
+- **Multiple pages / a multi-page newspaper, then a fixed issue length.** Originally deferred as a "deferred feature" until real data existed (see below). Revisited twice during Stage 3: first, a run on 67 real news items showed that a single page clearly can't hold a typical day's volume, and layout started generating as many pages as needed, uncapped (67 news items → 20 portrait pages). That turned out to be wrong on the merits: a printed newspaper is a fixed-length issue, not an endless feed. The final decision — 4 landscape A4 pages (`pipeline.NEWSPAPER_MAX_PAGES`; 2026-10-14: raised to 6 pages (+1 A3 sheet)), and whatever doesn't fit isn't dropped based on raw length — it's **selected by importance**: an LLM importance score (1-5, the same batch call that decides is_news) determines what gets printed first, what gets shortened by the model to save space, and what gets dropped from the issue as filler (`pipeline.build_newspaper`, `classifier.shorten`). See Stage 3 items 4-5 in [implementation-plan.md](implementation-plan.md).
+- **The cross-day deduplication window.** The same news story can resurface in a different channel not on the same day but days later (a delayed repost/retelling) — with collection limited to the last 24 hours (see above), there's no other way to catch that. Stage 2 deduplication compares the day's candidates not only against each other but against a rolling window of already-printed news from the last 5 days — using the same mechanism (a copy-paste heuristic plus LLM/embeddings), just with a wider comparison window. What's stored for this isn't the text of the finished page, but a separate list of published news items (headline/short text + date) — implemented in Stage 2.
+- **Rule for choosing which version to keep on a duplicate (2026-10-14).** The most detailed version is kept; the LLM decides how detailed something is. The code already works this way: `_BEST_VERSION_INSTRUCTION` (copy-paste clusters) and `_PARAPHRASE_RESOLUTION_INSTRUCTION` (retellings) in `classifier.py` pick the post that covers the facts most fully (details, names, numbers, circumstances); length by itself isn't the criterion, and there's no channel priority.
+- **News shortage (2026-10-14).** The `pipeline.MIN_ISSUE_NEWS` threshold is on the number of news items that passed into print (`included`): below it, no issue is assembled (`assemble_issue` returns None), and the user sees "Not enough news today: N (need at least M) — no issue assembled". The part about the printer being unreachable stayed in open questions.
+- **Timezone and where the day boundary falls (2026-10-14).** The collection window stays the same — 24 hours from the button press; the issue date is the end-of-window date in the local timezone of the machine doing the layout. Time in the DB stays in UTC; the user sees local time.
 
-> Четыре фичи, которые раньше значились здесь — персонализация значимости, персонализация по рубрикам, веб-интерфейс управления каналами, архив напечатанного — по решению пользователя (2026-09-25) признаны частью полноценного готового состояния проекта, а не отложенной идеей, и перенесены в [implementation-plan.md](implementation-plan.md) как Этапы 6-8 (плюс п.4 Этапа 4 для архива). Здесь остаются только фичи, которые по-прежнему не входят в готовое состояние.
+Decisions and their rationale are in [project-brief.md](project-brief.md), under "Mechanics" and "Open forks".
 
-- **Добивка пустого места внизу листа.** Внизу каждого листа мозаики остаётся пустая полоса примерно в 1/5 страницы: следующий ряд не помещается в остаток и уходит на следующий лист. Варианты: подбирать в остаток ряд поменьше (из очереди дальше) или сокращать ещё.
-- **Голые ссылки в тексте постов.** В тексте печатаются как обычный текст (`rozetked.me/news/48845`), на бумаге они бесполезны. Убирать или превращать в короткую подпись.
-- **Переход на gemini-embedding-2** (GA 2026-04-22) — требует перекалибровки SIMILARITY_THRESHOLD (0.80, откалиброван на gemini-embedding-001) на живых данных.
-- **Устойчивая retry-логика при офлайн-принтере** — с повторными попытками печати, а не просто логированием сбоя.
-- **Учёт расхода бумаги** — уведомление, когда бумага или картриджи заканчиваются.
-- **Перенос агента с основного ПК на отдельное устройство** — если захочется не занимать основной компьютер даже коротким запуском по кнопке, и/или самую дешёвую плату с вторичного рынка (проект — единственное назначение устройства, апгрейд не нужен).
-  - **Raspberry Pi 1 / Zero (первой версии) / Pi 2 не рассматривать вообще, по какой бы цене они ни продавались** — это ARMv6/ARMv7 без поддержки 64-битной ОС, современные пакеты Chromium всё реже собираются под эти архитектуры, есть реальный риск, что системный Chromium туда просто не встанет.
-  - **Raspberry Pi 3 Model B/B+** — практический минимум: ARMv8, тянет 64-битную Raspberry Pi OS, 1 ГБ RAM впритык для headless-рендера раз в сутки (не под нагрузкой, скорость не критична — своп-файл как запас на случай более тяжёлой полосы). Массово и дёшево продаётся на вторичке — люди апгрейдятся на 4/5. Это и есть ответ на "самая дешёвая, которая точно потянет".
-  - **Raspberry Pi Zero 2 W** технически тоже ARMv8/64-бит и дешевле Pi 3, но всего 512 МБ RAM — заметно больше риск нестабильности headless-браузера на неприсматриваемом ночном прогоне; экономить на этом не рекомендуется.
-  - **Playwright не поставляет свой бинарник Chromium под Linux ARM ни в каком варианте** — обычная `playwright install` тут не сработает независимо от модели платы. Рабочий путь — поставить Chromium штатным пакетом ОС (`apt install chromium-browser`) и указать Playwright путь к нему (`executable_path=...`) вместо попытки скачать браузер самостоятельно. Это отдельный шаг, который нужно не забыть при переносе.
-  - Загрузка с SSD/USB, а не с SD-карты, если хочется подстраховаться от износа при регулярной работе — для однократного разового назначения обычная SD-карта тоже приемлема.
+## Open questions — to close before or during implementation
+
+### Printer unavailability
+
+What to do if the printer is unreachable at print time (powered off, out of paper, no network) — retry later within the same run, prompt the user to run it again, or just log it and skip printing. Belongs to Stage 4 (printing).
+
+### Channel list format and editing
+
+In the first version, the list is part of the configuration, with no UI. How it should be edited in the future (a text file edited by hand; a simple web UI) is undecided and doesn't need deciding before the first version.
+
+---
+
+## Deferred features
+
+Not part of the first version — recorded so the idea isn't lost; no priority assigned.
+
+> Four features that used to be listed here — importance personalization, section-based personalization, a channel-management web UI, and a printed archive — were, by the user's decision (2026-09-25), reclassified as part of the project's full, finished state rather than a deferred idea, and moved into [implementation-plan.md](implementation-plan.md) as Stages 6-8 (plus item 4 of Stage 4 for the archive). What remains here are only features that still aren't part of the finished state.
+
+- **Filling the empty space at the bottom of a page.** Roughly 1/5 of a page's height is left empty at the bottom of every mosaic page: the next row doesn't fit in what's left and moves to the next page. Options: pick a smaller row from further in the queue to fill the gap, or shorten text further.
+- **Bare links in post text.** They currently print as plain text (`rozetked.me/news/48845`), which is useless on paper. Either strip them or turn them into a short caption.
+- **Migrating to gemini-embedding-2** (GA 2026-04-22) — requires recalibrating SIMILARITY_THRESHOLD (0.80, calibrated on gemini-embedding-001) against live data.
+- **Robust retry logic for an offline printer** — with actual print retries, instead of just logging the failure.
+- **Tracking paper usage** — a notification when paper or cartridges are running low.
+- **Moving the agent off the main PC onto a separate device** — in case it becomes worth not tying up the main computer even for a short button-triggered run, and/or finding the cheapest board on the secondhand market (the project would be the device's only purpose, so no need to future-proof it with upgrades).
+  - **Don't even consider the Raspberry Pi 1 / Zero (first generation) / Pi 2, at any price** — these are ARMv6/ARMv7 with no 64-bit OS support, and current Chromium packages are increasingly rarely built for these architectures; there's a real risk that the system Chromium package simply won't install there.
+  - **Raspberry Pi 3 Model B/B+** — the practical minimum: ARMv8, runs 64-bit Raspberry Pi OS, 1 GB RAM is just enough for a once-a-day headless render (not under load, so speed isn't critical — a swap file as a safety margin in case of a heavier page). Sold cheaply and in bulk on the secondhand market as people upgrade to the 4/5. This is the answer to "the cheapest board that will definitely handle it".
+  - **Raspberry Pi Zero 2 W** is technically also ARMv8/64-bit and cheaper than the Pi 3, but only has 512 MB RAM — noticeably higher risk of headless-browser instability during an unattended overnight run; not recommended as a way to save money here.
+  - **Playwright doesn't ship its own Chromium binary for Linux ARM, in any form** — a plain `playwright install` simply won't work regardless of which board model you use. The working path is to install Chromium via the OS's own package (`apt install chromium-browser`) and point Playwright at it (`executable_path=...`) instead of trying to have it download the browser itself. This is a separate step to remember when migrating.
+  - Booting from SSD/USB rather than an SD card, if you want insurance against wear from regular use — for a single dedicated purpose like this, a plain SD card is also acceptable.

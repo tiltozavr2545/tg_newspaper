@@ -1,19 +1,21 @@
-"""Логика мастера первоначальной настройки (страницы — в setup_html.py,
-маршруты — в scripts/console.py).
+"""Logic for the initial setup wizard (pages are in setup_html.py,
+routes are in scripts/console.py).
 
-Мастер даёт человеку настроить проект в браузере, не правя файлы руками:
+The wizard lets a person configure the project in the browser, with no manual
+file editing:
   1. Telegram API (api_id/api_hash)  -> .env
-  2. вход в Telegram-аккаунт         -> файл сессии Telethon
-  3. Gemini (ключ/модель/прокси)     -> .env
-  4. список каналов (с рубриками)    -> config/channels.yaml
-  (+ необязательно: YouTube-каналы для блока "Новые видео" -> там же)
-Бот-токена нет и не будет: сбор идёт по MTProto под пользовательским
-аккаунтом (см. AGENTS.md). Сессия и api_hash — секреты: не логируются, в HTML
-и сообщения об ошибках попадают только в маскированном виде.
+  2. Telegram account login          -> Telethon session file
+  3. Gemini (key/model/proxy)        -> .env
+  4. channel list (with sections)    -> config/channels.yaml
+  (+ optional: YouTube channels for the "New videos" block -> same file)
+There's no bot token and never will be: collection runs over MTProto under a
+user account (see AGENTS.md). The session and api_hash are secrets: never
+logged, and only ever shown masked in HTML and error messages.
 
-Модуль намеренно не зависит от HTTP-сервера: всё, что можно проверить без
-сети (запись .env, нормализация каналов, статус, логика входа с подменяемой
-фабрикой клиента), проверяется отдельным скриптом.
+The module deliberately doesn't depend on the HTTP server: everything that
+can be tested without the network (writing .env, channel normalization,
+status, login logic with a swappable client factory) is checked by a
+separate script.
 """
 
 from __future__ import annotations
@@ -38,11 +40,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_SESSION_NAME = "tg_newspaper"
 
-# Сетевые операции Telegram не должны подвешивать обработчик: без сети
-# Telethon по умолчанию долго пробует переподключаться.
+# Telegram network operations must not hang the handler: without a network,
+# Telethon by default keeps retrying to reconnect for a long time.
 TG_TIMEOUT_SECONDS = 15
 
-# Имена шагов мастера (порядок важен — это порядок прохождения).
+# Wizard step names (order matters — it's the order steps are taken in).
 STEP_TELEGRAM = "telegram"
 STEP_LOGIN = "login"
 STEP_GEMINI = "gemini"
@@ -57,22 +59,22 @@ STEP_TITLES = {
 
 
 class SetupError(RuntimeError):
-    """Ошибка настройки с готовым для человека текстом (не трейсбек)."""
+    """A setup error with text ready to show to a human (not a traceback)."""
 
 
 @dataclass(frozen=True)
 class StepResult:
-    """Итог действия мастера: ok + текст для показа на странице."""
+    """The outcome of a wizard action: ok + text to show on the page."""
     ok: bool
     message: str
 
 
-# ---------------------------------------------------------------- секреты
+# ---------------------------------------------------------------- secrets
 
 def mask_secret(value: str) -> str:
-    """Маска для показа секрета: только последние 4 символа, и то лишь если
-    секрет достаточно длинный (у короткого 4 символа — это уже заметная доля,
-    поэтому там не показываем ничего). Пустой — пустая строка."""
+    """Mask a secret for display: only the last 4 characters, and only if
+    the secret is long enough (for a short one, 4 characters is already a
+    noticeable chunk, so we show nothing in that case). Empty in, empty out."""
     if not value:
         return ""
     if len(value) <= 8:
@@ -81,8 +83,8 @@ def mask_secret(value: str) -> str:
 
 
 def scrub(text: str, *secrets: str) -> str:
-    """Убирает известные секреты из текста ошибки перед показом/логом: сторонние
-    библиотеки иногда включают в сообщение URL с ключом."""
+    """Strips known secrets out of error text before it's shown/logged: some
+    third-party libraries include a URL with the key in their messages."""
     for secret in secrets:
         if secret and len(secret) >= 6:
             text = text.replace(secret, mask_secret(secret))
@@ -95,8 +97,8 @@ _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 def _format_env_value(value: str) -> str:
-    """Значение для строки .env. Простые значения — как есть (формат
-    .env.example); со пробелами/#/кавычками — в двойных кавычках."""
+    """Format a value for an .env line. Plain values are left as-is (matching
+    .env.example's style); values with spaces/#/quotes get double-quoted."""
     if value and re.fullmatch(r"[A-Za-z0-9_./:@+\-=,]+", value):
         return value
     if not value:
@@ -106,14 +108,15 @@ def _format_env_value(value: str) -> str:
 
 
 def update_env_file(path: Path, updates: dict[str, str]) -> None:
-    """Меняет/добавляет в .env только ключи из `updates`, сохраняя остальные
-    строки, комментарии и неизвестные ключи как есть.
+    """Changes/adds only the keys from `updates` in .env, keeping every other
+    line, comment, and unknown key as-is.
 
-    Запись атомарная: временный файл в том же каталоге (иначе os.replace не
-    атомарен) с правами 0600 с самого создания, затем os.replace — читатель
-    никогда не увидит наполовину записанный .env, а права секрета не бывают
-    шире 0600 даже на мгновение. Затем окружение процесса обновляется, чтобы
-    консоль не приходилось перезапускать.
+    The write is atomic: a temp file in the same directory (otherwise
+    os.replace isn't atomic) with 0600 permissions from the moment it's
+    created, then os.replace — a reader never sees a half-written .env, and
+    the secret's permissions are never wider than 0600, not even for a
+    moment. The process's own environment is then refreshed, so the console
+    doesn't need restarting.
     """
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     remaining = dict(updates)
@@ -138,9 +141,10 @@ def update_env_file(path: Path, updates: dict[str, str]) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".env.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            # os.fchmod нет на Windows (Python 3.12); POSIX-права 0600 там всё
-            # равно не работают — доступ к профилю регулируют ACL каталога
-            # пользователя (%LOCALAPPDATA%), так что пропускаем без потерь.
+            # os.fchmod doesn't exist on Windows (Python 3.12); POSIX 0600
+            # permissions don't apply there anyway — access to the profile is
+            # governed by the user's folder ACL (%LOCALAPPDATA%), so this is
+            # skipped with no real loss.
             if hasattr(os, "fchmod"):
                 os.fchmod(tmp.fileno(), 0o600)
             tmp.write(text)
@@ -153,35 +157,36 @@ def update_env_file(path: Path, updates: dict[str, str]) -> None:
         raise
     os.chmod(path, 0o600)
 
-    # Перечитать окружение. override=True: значения, которые мы только что
-    # записали, должны победить прежние в os.environ. Пустое значение dotenv
-    # тоже подставит (как пустую строку) — это то, что нужно для "очистить".
+    # Reload the environment. override=True: the values we just wrote must
+    # win over whatever was already in os.environ. dotenv also substitutes an
+    # empty value (as an empty string) — which is exactly what's needed for
+    # "clear this field".
     load_dotenv(path, override=True)
     for key, value in updates.items():
         os.environ[key] = value
 
 
 def env_value(key: str, default: str = "") -> str:
-    """Текущее значение из окружения процесса (в него уже подгружен .env)."""
+    """The current value from the process environment (.env is already loaded into it)."""
     return os.environ.get(key, default).strip()
 
 
 def load_env_into_process() -> None:
-    """Подтянуть .env в окружение, не затирая переменные, заданные в оболочке
-    (как делает load_config)."""
+    """Load .env into the environment without overwriting variables already
+    set in the shell (same as load_config does)."""
     load_dotenv(env_path())
 
 
-# ---------------------------------------------------------------- каналы
+# ---------------------------------------------------------------- channels
 
 _USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
 _LINK = re.compile(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/(.+)$", re.I)
 
 
 def normalize_channel(raw: str) -> str | None:
-    """Приводит запись к username канала без @ или возвращает None, если это
-    не username (приглашения t.me/+xxx и joinchat по username не открыть —
-    Telethon-сбор у нас идёт по username)."""
+    """Normalizes an entry to a channel username with no @, or returns None if
+    it isn't a username (t.me/+xxx invite links and joinchat links aren't
+    openable by username — our Telethon collection works by username)."""
     item = raw.strip().strip("<>").strip()
     if not item:
         return None
@@ -189,7 +194,7 @@ def normalize_channel(raw: str) -> str | None:
     if m:
         path = re.split(r"[?#]", m.group(1))[0].strip("/")
         parts = [p for p in path.split("/") if p]
-        if parts and parts[0] == "s":  # t.me/s/<username> — веб-превью канала
+        if parts and parts[0] == "s":  # t.me/s/<username> — the channel's web preview
             parts = parts[1:]
         if not parts:
             return None
@@ -199,12 +204,14 @@ def normalize_channel(raw: str) -> str | None:
 
 
 def parse_channels_text(text: str) -> tuple[ChannelsFile, list[str]]:
-    """Из текста textarea — (структура без youtube, нераспознанное). Строка с
-    `#` — заголовок рубрики (целиком, с пробелами: "# Мир и политика"), каналы
-    после неё принадлежат ей; до первого заголовка — без рубрики. Разбор
-    построчно: нарезка всего текста по пробелам сломала бы заголовки. Внутри
-    обычных строк запятые/пробелы разделяют каналы. Дубли (без учёта регистра)
-    убираются, остаётся первое упоминание; пустая рубрика допустима."""
+    """From the textarea's text — (structure minus youtube, unrecognized
+    entries). A line starting with `#` is a section heading (taken whole,
+    spaces included: "# World and politics"); channels after it belong to
+    that section; before the first heading, channels have no section. Parsed
+    line by line: splitting the whole text on whitespace would break
+    headings. Within a regular line, commas/spaces separate channels.
+    Duplicates (case-insensitive) are removed, keeping the first mention; an
+    empty section is allowed."""
     cf = ChannelsFile()
     invalid: list[str] = []
     seen: set[str] = set()
@@ -235,7 +242,7 @@ def parse_channels_text(text: str) -> tuple[ChannelsFile, list[str]]:
 
 
 def channels_to_text(cf: ChannelsFile) -> str:
-    """Обратное к parse_channels_text: то, что показывается в textarea."""
+    """The inverse of parse_channels_text: what's shown in the textarea."""
     blocks: list[str] = []
     if cf.loose:
         blocks.append("\n".join(cf.loose))
@@ -252,8 +259,8 @@ _CHANNELS_HEADER = (
 
 
 def save_channels(path: Path, cf: ChannelsFile) -> None:
-    """Пишет channels.yaml (атомарно). Без рубрик и youtube получается прежний
-    формат `channels: [...]`."""
+    """Writes channels.yaml (atomically). With no sections and no youtube
+    entries, this comes out as the old `channels: [...]` format."""
     data: dict[str, object] = {}
     if cf.rubrics:
         data["rubrics"] = [{"name": n, "channels": list(chs)} for n, chs in cf.rubrics]
@@ -275,7 +282,7 @@ def save_channels(path: Path, cf: ChannelsFile) -> None:
 
 
 def load_channels(path: Path) -> ChannelsFile:
-    """channels.yaml целиком; пустая структура, если файла нет или он битый."""
+    """The whole of channels.yaml; an empty structure if the file is missing or broken."""
     try:
         return read_channels_file(path)
     except (OSError, yaml.YAMLError):
@@ -285,17 +292,17 @@ def load_channels(path: Path) -> ChannelsFile:
 # ---------------------------------------------------------------- YouTube
 
 def youtube_to_text(channels: list[YoutubeChannel]) -> str:
-    """Для textarea: то, что вводил пользователь (source), по одному на строку."""
+    """For the textarea: what the user entered (source), one per line."""
     return "\n".join(c.source for c in channels)
 
 
 def resolve_youtube_text(
     text: str, known: list[YoutubeChannel], resolver=resolve_channel
 ) -> tuple[list[YoutubeChannel], list[tuple[str, StepResult]]]:
-    """Из текста textarea — (каналы, результаты по строкам). Строки с тем же
-    source, что уже сохранён, не резолвим повторно (id/название из файла) —
-    сеть нужна только для новых. Дубли по id схлопываются. Если есть ошибки,
-    вызывающий не сохраняет ничего."""
+    """From the textarea's text — (channels, per-line results). Lines with a
+    source that's already saved aren't re-resolved (the id/title come from
+    the file) — the network is only needed for new ones. Duplicates by id
+    are collapsed. If there are any errors, the caller saves nothing."""
     by_source = {c.source: c for c in known}
     channels: list[YoutubeChannel] = []
     results: list[tuple[str, StepResult]] = []
@@ -321,19 +328,19 @@ def resolve_youtube_text(
 # ---------------------------------------------------------------- Telegram
 
 def session_file(session_name: str) -> Path:
-    """Файл сессии на диске: Telethon дописывает `.session` к имени."""
+    """The session file on disk: Telethon appends `.session` to the name."""
     return Path(session_base(session_name) + ".session")
 
 
 def secure_session_files(session_name: str) -> None:
-    """Права 0600 на файл сессии (и журнал SQLite): это ключ к аккаунту."""
+    """0600 permissions on the session file (and its SQLite journal): it's the key to the account."""
     base = session_file(session_name)
     for p in (base, base.with_name(base.name + "-journal")):
         try:
             if p.exists():
                 os.chmod(p, 0o600)
         except OSError:
-            logger.warning("не удалось выставить права 0600 на файл сессии")
+            logger.warning("failed to set 0600 permissions on the session file")
 
 
 def _default_client_factory(session: str, api_id: int, api_hash: str):
@@ -344,8 +351,8 @@ def _default_client_factory(session: str, api_id: int, api_hash: str):
     )
 
 
-# Фабрика клиента Telethon. Модуль-уровневая переменная — чтобы проверочный
-# скрипт мог подставить фейк и прогнать логику входа без сети.
+# The Telethon client factory. A module-level variable so a test script can
+# swap in a fake and exercise login logic without a network.
 client_factory = _default_client_factory
 
 
@@ -358,20 +365,21 @@ def _credentials() -> tuple[int, str, str] | None:
 
 
 def _run_with_client(op):
-    """Открывает клиента на файле сессии, выполняет `await op(client)`,
-    закрывает. Бросает SetupError, если нет api_id/api_hash.
+    """Opens a client on the session file, runs `await op(client)`, and
+    closes it. Raises SetupError if there's no api_id/api_hash.
 
-    Почему клиент не держится живым между HTTP-запросами. Шаги входа (телефон
-    -> код -> пароль) приходят разными запросами в разных потоках
-    ThreadingHTTPServer. Вариант "один клиент в отдельном потоке со своим
-    циклом" требует очередей/синхронизации и оставляет открытое соединение и
-    SQLite-сессию, если человек закрыл вкладку посреди входа. Вариант
-    "переоткрывать на том же файле сессии" проще и надёжнее: auth key
-    сохраняется в файл уже после send_code_request, а состояние входа на
-    стороне Telegram привязано к этому ключу, а не к TCP-соединению, поэтому
-    sign_in(code/password) на новом соединении с тем же ключом работает. В
-    памяти процесса остаётся только phone_code_hash (см. _Login). Платим одним
-    лишним подключением на шаг — для ручного одноразового входа несущественно.
+    Why the client isn't kept alive between HTTP requests. Login steps
+    (phone -> code -> password) arrive as separate requests on separate
+    ThreadingHTTPServer threads. A "one client in its own thread with its own
+    loop" approach would need queues/synchronization, and would leave an open
+    connection and SQLite session behind if the person closed the tab
+    mid-login. "Reopen on the same session file" is simpler and more robust:
+    the auth key is already saved to the file right after send_code_request,
+    and Telegram's login state is tied to that key, not to the TCP
+    connection, so sign_in(code/password) on a fresh connection with the same
+    key works fine. Only phone_code_hash lives in process memory (see
+    _Login). The cost is one extra connection per step — irrelevant for a
+    manual, one-off login.
     """
     creds = _credentials()
     if creds is None:
@@ -393,8 +401,9 @@ def _run_with_client(op):
 
 
 def describe_telegram_error(exc: BaseException) -> str:
-    """Понятный текст вместо трейсбека. Известные ошибки Telegram — по-русски,
-    прочие — имя класса и обрезанное сообщение без секретов."""
+    """A human-readable message instead of a traceback. Known Telegram errors
+    get their (Russian-language) text; anything else gets the class name plus
+    a truncated, secret-scrubbed message."""
     from telethon import errors as e
 
     if isinstance(exc, SetupError):
@@ -425,19 +434,19 @@ def describe_telegram_error(exc: BaseException) -> str:
 
 
 class _Login:
-    """Состояние многошагового входа в памяти процесса (одна консоль — один
-    человек, поэтому одно глобальное состояние, под замком: запросы идут в
-    разных потоках)."""
+    """In-process-memory state for the multi-step login (one console = one
+    person, so a single global state, behind a lock since requests arrive on
+    different threads)."""
 
     def __init__(self) -> None:
-        self.lock = threading.RLock()  # реентерабельный: submit_* зовут session_account
+        self.lock = threading.RLock()  # reentrant: submit_* call session_account
         self.reset()
 
     def reset(self) -> None:
         self.stage: str | None = None  # None | "code" | "password"
         self.phone = ""
         self.code_hash = ""
-        self.auth_cache: tuple[str, str] | None = None  # (путь сессии, "Имя (@user)")
+        self.auth_cache: tuple[str, str] | None = None  # (session path, "Name (@user)")
 
 
 LOGIN = _Login()
@@ -451,11 +460,11 @@ def _who(me) -> str:
 
 
 def session_account() -> tuple[bool | None, str]:
-    """Авторизована ли сессия: (True, "Имя (@user)") / (False, "") / (None, "")
-    когда проверить не удалось (нет сети). Файла сессии нет или нет
-    api_id/api_hash — сразу False, без обращения к сети. Успех кэшируется
-    в памяти: проверка делает сетевое подключение, а нужна на каждой странице
-    консоли (редирект до настройки)."""
+    """Whether the session is authorized: (True, "Name (@user)") / (False, "")
+    / (None, "") when it couldn't be checked (no network). No session file,
+    or no api_id/api_hash, means an immediate False with no network call.
+    A success is cached in memory: the check makes a network connection, and
+    it's needed on every console page (the redirect-to-setup logic)."""
     creds = _credentials()
     if creds is None:
         return False, ""
@@ -473,8 +482,8 @@ def session_account() -> tuple[bool | None, str]:
 
         try:
             ok, who = _run_with_client(op)
-        except Exception as exc:  # noqa: BLE001 — "не удалось проверить" — не ошибка настройки
-            logger.warning("не удалось проверить сессию Telegram: %s", type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 — "couldn't check" isn't a setup error
+            logger.warning("failed to check the Telegram session: %s", type(exc).__name__)
             return None, ""
         if ok:
             LOGIN.auth_cache = (path, who)
@@ -482,7 +491,7 @@ def session_account() -> tuple[bool | None, str]:
 
 
 def start_login(phone: str) -> StepResult:
-    """Шаг 2a: отправить код на телефон."""
+    """Step 2a: send a code to the phone."""
     phone = phone.strip().replace(" ", "")
     if not re.fullmatch(r"\+?\d{7,15}", phone):
         return StepResult(False, "Введите номер в международном формате, например +79991234567.")
@@ -503,7 +512,7 @@ def start_login(phone: str) -> StepResult:
 
 
 def submit_code(code: str) -> StepResult:
-    """Шаг 2b: ввести код. Результат: вход выполнен, нужен пароль 2FA или ошибка."""
+    """Step 2b: enter the code. Result: logged in, 2FA password needed, or an error."""
     from telethon import errors as e
 
     code = re.sub(r"\D", "", code)
@@ -522,13 +531,13 @@ def submit_code(code: str) -> StepResult:
             return StepResult(True, "На аккаунте включена двухфакторная защита — введите пароль.")
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, (e.PhoneCodeExpiredError, e.PhoneNumberInvalidError)):
-                LOGIN.stage = None  # код уже не годится — надо начинать с телефона
+                LOGIN.stage = None  # the code is no longer valid — must start over from the phone
             return StepResult(False, describe_telegram_error(exc))
         return _finish_login()
 
 
 def submit_password(password: str) -> StepResult:
-    """Шаг 2c: пароль двухфакторной защиты."""
+    """Step 2c: the two-factor auth password."""
     with LOGIN.lock:
         if LOGIN.stage != "password":
             return StepResult(False, "Пароль сейчас не требуется.")
@@ -538,13 +547,13 @@ def submit_password(password: str) -> StepResult:
 
         try:
             _run_with_client(op)
-        except Exception as exc:  # noqa: BLE001 — сообщение не содержит пароль (см. describe_*)
+        except Exception as exc:  # noqa: BLE001 — the message never contains the password (see describe_*)
             return StepResult(False, describe_telegram_error(exc))
         return _finish_login()
 
 
 def _finish_login() -> StepResult:
-    """Вызывать под LOGIN.lock после успешного sign_in."""
+    """Call this while holding LOGIN.lock, after a successful sign_in."""
     LOGIN.stage = None
     LOGIN.phone = LOGIN.code_hash = ""
     LOGIN.auth_cache = None
@@ -561,9 +570,9 @@ def cancel_login() -> None:
 
 
 def check_channels(channels: list[str]) -> list[tuple[str, StepResult]]:
-    """Проверка доступа: get_entity по каждому каналу через авторизованную
-    сессию. Возвращает [(канал, результат)]; общая проблема (нет сессии/сети)
-    — один результат на все."""
+    """Access check: get_entity for each channel via the authorized session.
+    Returns [(channel, result)]; a blanket problem (no session/network) gets
+    the same result repeated for all of them."""
     from telethon import errors as e
 
     ok, _ = session_account()
@@ -582,7 +591,7 @@ def check_channels(channels: list[str]) -> list[tuple[str, StepResult]]:
                 results.append((ch, StepResult(False, "канал приватный или аккаунт из него исключён")))
             except e.FloodWaitError as exc:
                 results.append((ch, StepResult(False, describe_telegram_error(exc))))
-                break  # дальше — только больше флуд-ошибок
+                break  # anything further is just more flood errors
             except ValueError:
                 results.append((ch, StepResult(False, "не найден (Telegram не знает такой username)")))
             except Exception as exc:  # noqa: BLE001
@@ -608,8 +617,8 @@ def check_channels(channels: list[str]) -> list[tuple[str, StepResult]]:
 # ---------------------------------------------------------------- Gemini
 
 def check_gemini(api_key: str, model: str, base_url: str, factory=None) -> StepResult:
-    """Один дешёвый запрос (метаданные модели, без генерации) тем же клиентом,
-    что у классификатора. Ошибки — понятным текстом с подсказками."""
+    """One cheap request (model metadata, no generation) using the same
+    client as the classifier. Errors come back as readable text with hints."""
     if not api_key:
         return StepResult(False, "Ключ Gemini не задан.")
     if not base_url:
@@ -635,20 +644,20 @@ def check_gemini(api_key: str, model: str, base_url: str, factory=None) -> StepR
     return StepResult(True, f"Ключ принят, модель «{model}» доступна.")
 
 
-# ---------------------------------------------------------------- статус
+# ---------------------------------------------------------------- status
 
 @dataclass(frozen=True)
 class StepStatus:
     key: str
     title: str
     done: bool
-    detail: str  # чего не хватает / что настроено (без секретов)
+    detail: str  # what's missing / what's configured (no secrets)
 
 
 def compute_status(check_session: bool = True) -> list[StepStatus]:
-    """Что настроено, а что нет — без исключений при отсутствии .env,
-    channels.yaml и сессии. check_session=False пропускает сетевую проверку
-    сессии (остаётся проверка наличия файла)."""
+    """What's configured and what isn't — with no exceptions when .env,
+    channels.yaml, or the session is missing. check_session=False skips the
+    network check of the session (the file-existence check still runs)."""
     load_env_into_process()
     steps: list[StepStatus] = []
 
@@ -672,16 +681,17 @@ def compute_status(check_session: bool = True) -> list[StepStatus]:
             steps.append(StepStatus(STEP_LOGIN, STEP_TITLES[STEP_LOGIN], True, "файл сессии есть (авторизация не проверялась)"))
         else:
             ok, who = session_account()
-            if ok is None:  # сети нет — не блокируем консоль из-за невозможности проверки
+            if ok is None:  # no network — don't block the console just because we can't check
                 steps.append(StepStatus(STEP_LOGIN, STEP_TITLES[STEP_LOGIN], True, "файл сессии есть, проверить авторизацию не удалось (нет сети?)"))
             elif ok:
                 steps.append(StepStatus(STEP_LOGIN, STEP_TITLES[STEP_LOGIN], True, f"вход выполнен: {who}"))
             else:
                 steps.append(StepStatus(STEP_LOGIN, STEP_TITLES[STEP_LOGIN], False, "сессия не авторизована — завершите вход"))
 
-    # Прокси обязателен: агент работает из РФ, Gemini напрямую гео-блокирует.
-    # Обязательность — только здесь (мастер/статус); load_config() без прокси
-    # по-прежнему работает, чтобы пайплайн и офлайн-проверки не менялись.
+    # The proxy is mandatory: the agent runs from Russia, and Gemini
+    # geo-blocks direct access. This requirement is enforced only here
+    # (wizard/status); load_config() still works without a proxy, so the
+    # pipeline and offline checks don't need to change.
     key = env_value("GEMINI_API_KEY")
     proxy = env_value("GEMINI_BASE_URL").rstrip("/")
     gem_missing = [n for n, v in (("ключ Gemini", key), ("адрес прокси GEMINI_BASE_URL", proxy)) if not v]

@@ -1,25 +1,26 @@
-"""Дедупликация новостей, пересказанных разными словами — вторая половина
-Этапа 2 п.2 плана.
+"""Deduplicating news retold in different words — the second half of
+plan Stage 2 item 2.
 
-Копипаст-эвристика (dedup.py) ловит только текстуальное совпадение; здесь —
-семантическое: одна и та же новость, сформулированная разными каналами
-своими словами. Пример на реальных данных: два поста про возврат денег за
-концерт Канье Уэста — схожесть текста (rapidfuzz) всего 77%, ниже порога
-копипасты, но по смыслу это одна новость.
+The copy-paste heuristic (dedup.py) only catches textual matches; this is
+semantic: the same news item phrased in each channel's own words. Real-data
+example: two posts about refunds for the Kanye West concert — text similarity
+(rapidfuzz) only 77%, below the copy-paste threshold, but they're the same
+news by meaning.
 
-Эмбеддинги — тот же провайдер и прокси (Cloudflare Worker), что и
-LLM-классификация в classifier.py.
+Embeddings use the same provider and proxy (Cloudflare Worker) as the LLM
+classification in classifier.py.
 
-Важно: этот модуль только предварительно группирует ПОХОЖИЕ по теме посты —
-это черновой фильтр, не окончательное решение. На реальных данных выяснилось,
-что чистое косинусное сходство эмбеддингов не отличает "тот же факт другими
-словами" от "разные факты одной развивающейся истории" — обе ситуации дают
-схожесть в диапазоне ~0.86-0.90 (пример: два пересказа новости про возврат
-денег за концерт дают 0.99, а "пожар — причина/жертвы/фото" — три РАЗНЫХ
-факта одного события — дают 0.78-0.90, то есть чисто по числу неотличимы).
-Поэтому порог здесь занижен нарочно (лучше лишний раз ошибочно предложить
-группу LLM, чем пропустить настоящий дубль) — окончательное решение "это
-правда один факт или нет" принимает classifier.GeminiClassifier.resolve_paraphrase_clusters.
+Important: this module only does a preliminary grouping of posts that are
+SIMILAR by topic — it's a rough filter, not the final decision. Real data
+showed that pure cosine similarity of embeddings can't distinguish "the same
+fact in different words" from "different facts of one unfolding story" — both
+situations land in the ~0.86-0.90 similarity range (example: two retellings of
+the concert-refund news score 0.99, while "fire — cause/victims/photo" — three
+DIFFERENT facts of the same event — score 0.78-0.90, i.e. indistinguishable by
+the number alone). That's why the threshold here is deliberately set low
+(better to occasionally offer the LLM an extra group than to miss a real
+duplicate) — the final call on "is this really one fact or not" is made by
+classifier.GeminiClassifier.resolve_paraphrase_clusters.
 """
 
 from __future__ import annotations
@@ -37,31 +38,32 @@ from .storage import Post
 
 logger = logging.getLogger(__name__)
 
-# text-embedding-004 снят с поддержки (проверено на реальном ключе,
-# 404 NOT_FOUND) — gemini-embedding-001 актуальная GA-модель на замену.
-# Вышла gemini-embedding-2 (GA 2026-04-22), но SIMILARITY_THRESHOLD откалиброван
-# на 001; переход требует перекалибровки порога на живых данных — отложено сознательно.
+# text-embedding-004 is no longer supported (confirmed with a real key,
+# 404 NOT_FOUND) — gemini-embedding-001 is the current GA model replacing it.
+# gemini-embedding-2 has shipped (GA 2026-04-22), but SIMILARITY_THRESHOLD is
+# calibrated for 001; switching requires recalibrating the threshold on live
+# data — deliberately deferred.
 EMBEDDING_MODEL = "gemini-embedding-001"
 
-# Лимит Gemini API на batchEmbedContents — максимум текстов в одном запросе.
+# Gemini API limit on batchEmbedContents — max texts per request.
 EMBED_BATCH_SIZE = 100
 
-# embed_content живёт на отдельной, куда более тесной бесплатной квоте, чем
-# generateContent (100 запросов/мин против куда большего лимита на текст) —
-# на реальном прогоне с двумя вызовами find_paraphrase_clusters +
-# filter_against_history подряд это укладывалось в 429 без единого ретрая
-# (сама библиотека google-genai ретраит только сетевые сбои, не квоту).
-# Модели на замену нет (эмбеддинг только один), поэтому просто ждём и
-# пробуем тот же запрос снова — та же логика ожидания retryDelay, что и в
+# embed_content lives under a separate, much tighter free quota than
+# generateContent (100 requests/min vs. a much higher text limit) — in a real
+# run with two back-to-back calls to find_paraphrase_clusters +
+# filter_against_history, this reliably hit 429 without a single retry
+# (the google-genai library itself only retries network failures, not quota).
+# There's no replacement model (only one embedding model exists), so we just
+# wait and retry the same request — the same retryDelay-waiting logic as in
 # classifier.py._generate_structured.
 _MAX_RETRIES = 5
 
-# Порог косинусного сходства эмбеддингов для черновой группировки кандидатов
-# в дубли (не финальное решение — см. предупреждение в шапке файла).
-# Откалиброван на реальных данных: настоящие пересказы дают 0.87-0.99, чисто
-# не связанные посты — 0.68-0.75. Взят с запасом ниже самого слабого
-# найденного настоящего пересказа (0.873), чтобы не потерять кандидата;
-# ложные срабатывания (0.78-0.90) отсеивает LLM в resolve_paraphrase_clusters.
+# Cosine similarity threshold for the rough grouping of candidates into
+# duplicates (not the final decision — see the warning in the file header).
+# Calibrated on real data: genuine retellings score 0.87-0.99, truly unrelated
+# posts score 0.68-0.75. Set with a margin below the weakest genuine retelling
+# found (0.873), to avoid losing a candidate; false positives (0.78-0.90) are
+# filtered out by the LLM in resolve_paraphrase_clusters.
 SIMILARITY_THRESHOLD = 0.80
 
 
@@ -77,7 +79,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 class GeminiEmbedder:
     def __init__(self, config: Config) -> None:
         if not config.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY не задан в .env — эмбеддинги недоступны.")
+            raise RuntimeError("GEMINI_API_KEY is not set in .env — embeddings are unavailable.")
         http_options = (
             types.HttpOptions(base_url=config.gemini_base_url)
             if config.gemini_base_url
@@ -98,7 +100,7 @@ class GeminiEmbedder:
                 if is_transient(exc):
                     delay = retry_delay_seconds(exc)
                     logger.warning(
-                        "embed_content недоступен (%s), жду %.0fс и пробую снова",
+                        "embed_content unavailable (%s), waiting %.0fs and retrying",
                         str(exc)[:70], delay,
                     )
                     last_exc = exc
@@ -108,60 +110,61 @@ class GeminiEmbedder:
             embeddings = response.embeddings or []
             if len(embeddings) != len(batch):
                 raise RuntimeError(
-                    f"batchEmbedContents вернул {len(embeddings)} из {len(batch)}"
+                    f"batchEmbedContents returned {len(embeddings)} of {len(batch)}"
                 )
             return [e.values for e in embeddings]
-        raise last_exc or RuntimeError("embed_content не ответил")
+        raise last_exc or RuntimeError("embed_content never responded")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Возвращает вектор для каждого текста, в том же порядке."""
+        """Returns a vector for each text, in the same order."""
         vectors: list[list[float]] = []
         for start in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = texts[start : start + EMBED_BATCH_SIZE]
             vectors.extend(self._embed_batch(batch))
-            logger.info("эмбеддинги готовы: %d-%d из %d", start, start + len(batch), len(texts))
+            logger.info("embeddings ready: %d-%d of %d", start, start + len(batch), len(texts))
         return vectors
 
 
 def find_paraphrase_clusters(
     posts: list[Post], embedder: GeminiEmbedder
 ) -> list[list[Post]]:
-    """Группирует посты по семантическому сходству (пересказ той же новости).
+    """Groups posts by semantic similarity (retellings of the same news item).
 
-    Каждый пост попадает ровно в один кластер; посты без дублей — в
-    кластер размера 1.
+    Every post ends up in exactly one cluster; posts with no duplicates get
+    a cluster of size 1.
     """
     if not posts:
         return []
     texts = [post.text.strip() for post in posts]
     vectors = embedder.embed(texts)
 
-    # Одна связь (single-linkage): пост входит в кластер, если похож хотя бы
-    # на ОДНОГО текущего участника — сознательно, после двух туров правки на
-    # реальных данных:
+    # Single-linkage: a post joins a cluster if it's similar to at least ONE
+    # current member — a deliberate choice, after two rounds of fixes against
+    # real data:
     #
-    # 1. Изначально было single-linkage — сломалось на "хабе": пост с общей
-    #    "техно-лексикой" утащил в один кластер вообще не связанные посты
-    #    (Vivo/RTX/реклама в играх), похожие на него по отдельности, но не
-    #    друг на друга.
-    # 2. Заменили на complete-linkage (похож на ВСЕХ участников) — это
-    #    исправило хаб, но внесло новую, более тихую поломку: порядок
-    #    обработки решает судьбу поста. Реальный случай — два поста про
-    #    изъятие кокаина (схожесть между ними 0.98!) не попали в один
-    #    кластер, потому что один из них раньше по списку прибился к чужому
-    #    кластеру из трёх слабо связанных политических историй (0.80-0.81
-    #    с каждой по отдельности) и тем самым поднял требования для входа
-    #    в него выше, чем настоящий дубль мог дать по двум из трёх членов
-    #    (0.796, 0.797 — чуть ниже порога).
+    # 1. Originally this was single-linkage — it broke on a "hub": a post
+    #    with generic "tech jargon" dragged completely unrelated posts
+    #    (Vivo/RTX/in-game ads) into one cluster, each individually similar
+    #    to it, but not to each other.
+    # 2. Switched to complete-linkage (similar to ALL members) — this fixed
+    #    the hub problem, but introduced a new, quieter one: processing
+    #    order decides a post's fate. A real case: two posts about a cocaine
+    #    seizure (0.98 similarity between them!) didn't end up in the same
+    #    cluster, because one of them had earlier in the list latched onto an
+    #    unrelated cluster of three loosely-connected political stories
+    #    (0.80-0.81 with each individually), which raised the bar for joining
+    #    it higher than a genuine duplicate could clear against two of the
+    #    three members (0.796, 0.797 — just under the threshold).
     #
-    # К этому моменту жёсткий промпт LLM (_PARAPHRASE_RESOLUTION_INSTRUCTION
-    # в classifier.py — требует называть конкретный общий факт, а не тему)
-    # уже неоднократно доказал на реальных данных, что верно разбирает даже
-    # смешанные группы (мигранты vs укрытия склада, растрата vs мошенничество,
-    # кластер из 4 новостей про Дудя — оставил нужное, остальное разложил по
-    # разным фактам). Поэтому решили вернуться к single-linkage и держать
-    # кластеры пошире: реже теряем настоящий дубль, а разбор смешанной группы
-    # отдаём LLM, а не порогу схожести.
+    # By this point, the strict LLM prompt (_PARAPHRASE_RESOLUTION_INSTRUCTION
+    # in classifier.py — it requires naming a specific shared fact, not just a
+    # topic) had already repeatedly proven, on real data, that it correctly
+    # sorts out even mixed groups (migrants vs. warehouse break-ins,
+    # embezzlement vs. fraud, a 4-post cluster about Dud (the YouTuber) that
+    # kept what belonged together and split the rest out by fact). So we
+    # decided to go back to single-linkage and keep clusters wider: we lose a
+    # genuine duplicate less often, and leave sorting out a mixed group to the
+    # LLM rather than to a similarity threshold.
     clusters: list[list[int]] = []
     for i, vec in enumerate(vectors):
         placed = False

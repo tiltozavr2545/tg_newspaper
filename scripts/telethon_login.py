@@ -1,11 +1,11 @@
 """
-Одноразовый интерактивный логин Telethon под аккаунтом проекта.
+One-off interactive Telethon login under the project's account.
 
-Запуск: uv run python scripts/telethon_login.py
-Спросит номер телефона, код подтверждения из Telegram и (если включена)
-пароль двухфакторки. После успешного входа создаст файл сессии
-(TG_SESSION_NAME из .env, например tg_newspaper.session) — это секрет,
-хранить как есть, не коммитить (уже в .gitignore).
+Run: uv run python scripts/telethon_login.py
+Will ask for the phone number, the confirmation code from Telegram, and (if
+enabled) the two-factor password. On successful login creates a session file
+(TG_SESSION_NAME from .env, e.g. tg_newspaper.session) — this is a secret,
+keep it as is, don't commit it (already in .gitignore).
 """
 
 import os
@@ -15,8 +15,8 @@ from telethon.sync import TelegramClient
 
 from tg_newspaper.config import env_path, session_base
 
-# Тот же вход можно пройти в браузере — мастер настройки в консоли
-# (scripts/console.py); этот скрипт остаётся терминальной альтернативой.
+# The same login can be done in the browser — the setup wizard in the console
+# (scripts/console.py); this script remains a terminal alternative.
 load_dotenv(env_path())
 
 api_id = os.environ["TG_API_ID"]

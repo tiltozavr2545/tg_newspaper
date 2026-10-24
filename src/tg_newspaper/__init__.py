@@ -1,11 +1,11 @@
-"""CLI-эквивалент кнопки "Собрать газету" из локальной консоли
-(scripts/console.py) — на случай, когда нужен headless-запуск из терминала,
-без браузера. Отбор постов и вёрстка номера — те же функции
-tg_newspaper.pipeline, что и у кнопки: раздельной логики нет.
+"""CLI equivalent of the "Assemble newspaper" button from the local console
+(scripts/console.py) — for cases where a headless run from the terminal is
+needed, without a browser. Post selection and issue layout use the same
+tg_newspaper.pipeline functions as the button: there is no separate logic.
 
-Запускается вручную, по требованию — не по расписанию (см. AGENTS.md:
-проект больше не собирает газету автоматически раз в сутки, только по
-явной команде пользователя, будь то нажатие кнопки или запуск этого CLI).
+Run manually, on demand — not on a schedule (see AGENTS.md: the project no
+longer assembles the newspaper automatically once a day, only on the user's
+explicit command, whether that's clicking the button or running this CLI).
 """
 
 import logging
@@ -28,7 +28,7 @@ def main() -> None:
             "(LLM-классификация и дедупликация)."
         )
 
-    logger.info("команда 'Собрать газету': каналов=%d, окно=последние 24 часа", len(config.channels))
+    logger.info("'assemble newspaper' command: channels=%d, window=last 24 hours", len(config.channels))
     result = run_pipeline_for_last_24h(config)
 
     included = [o for o in result.outcomes if o.included]
@@ -49,14 +49,14 @@ def main() -> None:
     print(f"\nСохранено как прогон #{result.run_id}.")
     print("Смотреть: uv run python scripts/console.py")
 
-    # Отбор уже сохранён в БД; сбой вёрстки (Gemini/Chromium) его не отменяет —
-    # объясняем, как свёрстать номер заново, вместо голого traceback.
+    # The selection is already saved to the DB; a layout failure (Gemini/Chromium)
+    # does not undo it — explain how to re-render the issue instead of a bare traceback.
     try:
         conn = connect(config.db_path)
         run = next(r for r in list_runs(conn) if r.run_id == result.run_id)
         issue = assemble_issue(config, conn, run)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("сборка номера не удалась")
+        logger.exception("issue assembly failed")
         print(
             f"\nНомер свёрстать не удалось: {exc}\n"
             f"Отбор сохранён; повторить вёрстку: uv run python scripts/render_preview.py {result.run_id}"

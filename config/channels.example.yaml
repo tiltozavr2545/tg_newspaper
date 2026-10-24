@@ -1,18 +1,18 @@
-# Список каналов-источников. Скопировать в channels.yaml и заполнить.
-# Канал — username без @ (как в ссылке t.me/<username>).
+# List of source channels. Copy to channels.yaml and fill in.
+# Channel — username without @ (as in the link t.me/<username>).
 #
-# rubrics — рубрики (секции газеты): имя и каналы. Порядок рубрик = порядок в номере.
+# rubrics — sections of the newspaper: name and channels. Section order = order in the issue.
 rubrics:
-  - name: Новости
+  - name: News
     channels: [example_news_channel, another_news_channel]
-  - name: Блогеры
+  - name: Bloggers
     channels: [example_blogger]
-# channels — каналы без рубрики (необязательно; можно оставить только этот ключ
-# без rubrics — это прежний формат).
+# channels — channels without a section (optional; this key alone, without
+# rubrics, can be used — it's the older format).
 channels:
   - example_channel
-# youtube — каналы для блока "Новые видео" (необязательно). id — UC..., title и
-# source мастер настройки заполняет сам при добавлении канала.
+# youtube — channels for the "New videos" block (optional). id is UC..., title and
+# source are filled in automatically by the setup wizard when a channel is added.
 youtube:
   - id: UC_x5XG1OV2P6uZZ5FSM9Ttw
     title: Google for Developers

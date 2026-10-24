@@ -1,9 +1,9 @@
-"""Рендер локальной HTML-консоли: кнопка "Собрать газету" (запускает полный
-прогон за последние сутки) и список сохранённых прогонов — по каждому
-подробная таблица, какие посты пошли в газету, какие отсеяны и почему.
-Просмотр уже сохранённого прогона (pipeline.load_run) не обращается к LLM
-и ничего не запускает — консоль можно листать сколько угодно раз бесплатно;
-обращение к Telethon/LLM происходит только по нажатию кнопки.
+"""Renders the local HTML console: the "Assemble newspaper" button (triggers
+a full run over the last 24 hours) and the list of saved runs — each with a
+detailed table of which posts made it into the paper, which were filtered
+out, and why. Viewing an already-saved run (pipeline.load_run) doesn't touch
+the LLM and doesn't trigger anything — the console can be browsed as many
+times as you like, for free; Telethon/LLM calls only happen on button press.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ STAGE_LABELS = {
     "final": "—",
 }
 
-# Сколько последних прогонов показывать в навигации/на главной — по мотивам
-# скользящего окна дедупликации за 5 дней (Этап 2 п.4).
+# How many recent runs to show in the nav/home page — echoes the 5-day
+# rolling dedup window (Stage 2 item 4).
 NAV_RUNS_LIMIT = 5
 
 STYLE = """
@@ -139,7 +139,7 @@ def run_page_filename(run_id: int) -> str:
 
 
 def _text_html(raw_text: str) -> str:
-    """Короткое превью с раскрытием по клику — полный текст поста без обрезки."""
+    """A short preview that expands on click — the post's full text, never truncated."""
     stripped = raw_text.strip()
     preview = html.escape(stripped.replace("\n", " "))[:140]
     if len(stripped) <= 140:
@@ -155,11 +155,11 @@ def _row_html(outcome: PostOutcome) -> str:
     stage = STAGE_LABELS.get(outcome.stage, outcome.stage)
     text = _text_html(p.text)
     reason = html.escape(outcome.reason)
-    # photo_relevance у отсеянных постов — заглушка по умолчанию (1), а не
-    # настоящая оценка LLM: до классификации такие посты не доходят (см.
-    # PostOutcome.photo_relevance в pipeline.py). Показываем отдельную
-    # нейтральную заглушку, а не один из трёх реальных уровней, чтобы не
-    # выдавать её за решение модели.
+    # For filtered-out posts, photo_relevance is a default placeholder (1),
+    # not a real LLM score: such posts never reach classification (see
+    # PostOutcome.photo_relevance in pipeline.py). We show a separate neutral
+    # placeholder, not one of the three real levels, so it isn't mistaken for
+    # an actual model decision.
     if not outcome.included:
         photo_badge = '<span class="badge photo-unknown">— не оценивалось</span>'
     elif outcome.photo_relevance >= 3:
@@ -182,9 +182,9 @@ def _row_html(outcome: PostOutcome) -> str:
 
 
 def _score_cell(outcome: PostOutcome) -> str:
-    """Оценки значимости: общая (generic), для читателя (personal) и итоговая.
-    Для отсеянных — прочерк; для старых прогонов (final_importance == 0) —
-    только общая, как раньше; personal == 0 (пустой профиль) не показывается."""
+    """Importance scores: generic, personal (for the reader), and final.
+    Filtered-out posts get a dash; old runs (final_importance == 0) show just
+    the generic score, as before; personal == 0 (empty profile) isn't shown."""
     if not outcome.included or outcome.importance <= 0:
         return '<span class="badge photo-unknown">—</span>'
     parts = [f"общая <b>{outcome.importance}</b>"]
@@ -218,7 +218,7 @@ def _period_html(period_start: datetime | None, period_end: datetime | None) -> 
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
-    """Русское склонение по числу: 1 полоса, 2 полосы, 5 полос."""
+    """Russian plural inflection by count: 1 полоса, 2 полосы, 5 полос."""
     if n % 10 == 1 and n % 100 != 11:
         return one
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
@@ -227,8 +227,8 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 
 
 def _render_form_html(run_id: int, label: str, secondary: bool = False) -> str:
-    # Сборка долгая (вёрстка + вызовы Gemini) — блокируем кнопку от повторных
-    # кликов, как у основной.
+    # Assembly is slow (layout + Gemini calls) — block the button against
+    # repeated clicks, same as the main one.
     cls = "btn secondary" if secondary else "btn"
     return (
         f'<form method="post" action="/run_{run_id}/render">'
@@ -239,9 +239,9 @@ def _render_form_html(run_id: int, label: str, secondary: bool = False) -> str:
 
 
 def _issue_html(run_id: int, included: int, page_count: int, render_error: str | None) -> str:
-    """Блок "Номер" на странице прогона: скачивание PDF, превью полос и
-    пересборка. Список страниц приходит снаружи — файловую систему этот
-    модуль не трогает."""
+    """The "Issue" block on the run page: PDF download, page previews, and
+    re-assembly. The page list is passed in from outside — this module never
+    touches the filesystem."""
     error_html = (
         f'<div class="error-box">Не удалось свёрстать номер (отбор сохранён):\n'
         f"{html.escape(render_error)}</div>"
@@ -275,7 +275,7 @@ def _issue_html(run_id: int, included: int, page_count: int, render_error: str |
 
 
 def _videos_html(videos: list[YoutubeVideo], youtube_enabled: bool) -> str:
-    """Раздел "Новые видео": без каналов и без видео не показывается вовсе."""
+    """The "New videos" section: not shown at all with no channels and no videos."""
     if not videos and not youtube_enabled:
         return ""
     if not videos:
@@ -376,8 +376,8 @@ _RUN_BUTTON_HTML = """
 
 
 def _feedback_banners_html(onboarded: bool, issue_survey_run_id: int | None) -> str:
-    """Блоки Этапа 6 на главной: онбординг (пока не пройден — заметно, и
-    запуск прогона заблокирован) и опрос по последнему собранному номеру."""
+    """Stage 6 blocks on the home page: onboarding (prominent while not done,
+    and the run button is blocked) and the survey for the last assembled issue."""
     parts = []
     if not onboarded:
         parts.append(
@@ -395,10 +395,11 @@ def _feedback_banners_html(onboarded: bool, issue_survey_run_id: int | None) -> 
 
 
 def _learning_html(stats: LearningStats | None) -> str:
-    """Компактный показатель "учится ли газета": число опросов и среднее
-    совпадение порядка читателя с моделью (tau-b, -1..1) — последние 5 против
-    предыдущих 5. Рост — модель всё лучше угадывает порядок читателя. Без
-    графиков и JS: пока данных мало, честно пишем, что сравнивать нечего."""
+    """A compact "is the newspaper learning" indicator: survey count and the
+    average match between the reader's order and the model's (tau-b, -1..1)
+    — the last 5 against the previous 5. Rising means the model is getting
+    better at guessing the reader's order. No charts, no JS: while there's
+    too little data, it just honestly says there's nothing to compare yet."""
     if stats is None or stats.submitted == 0:
         return ""
     if stats.recent_avg is None:
@@ -468,12 +469,13 @@ def render_index_page(
 
 
 def _app_version() -> str:
-    """Версия установленного пакета; "dev" там, где метаданных нет.
+    """The installed package's version; "dev" where there's no metadata.
 
-    Номер релиза подставляет только CI при сборке, а в репозитории версия в
-    pyproject не совпадает с тегом. Поэтому при запуске из репозитория (нет
-    TG_NEWSPAPER_HOME) показываем, что это dev-сборка, и короткий хеш коммита;
-    если git недоступен, остаётся просто "+dev". В релизе — только версия.
+    Only CI fills in the release number at build time, and in the repo, the
+    pyproject version doesn't match the tag. So when running from the repo
+    (no TG_NEWSPAPER_HOME), this shows that it's a dev build plus a short
+    commit hash; if git is unavailable, it just stays "+dev". In a release,
+    it's just the version.
     """
     try:
         ver = version("tg-newspaper")
@@ -494,8 +496,8 @@ def _app_version() -> str:
 
 
 def render_error_page(message: str) -> str:
-    """Страница ошибки прогона (сбой Telethon/Gemini и т.п.) — показывается
-    вместо результата, чтобы не терять сообщение об ошибке в консоли сервера."""
+    """A run-failure page (a Telethon/Gemini failure, etc.) — shown instead of
+    a result, so the error message isn't lost in the server console."""
     return f"""<!doctype html>
 <html lang="ru">
 <head>

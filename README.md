@@ -1,134 +1,134 @@
 # 🗞️ TG Newspaper
 
-**Утренняя газета из ваших Telegram-каналов: нажали кнопку — получили номер, который можно прочитать за чашкой кофе и закрыть.**
+**A morning newspaper from your Telegram channels: press a button, get an issue you can read over coffee and put down.**
 
-[![Последний релиз](https://img.shields.io/github/v/release/tiltozavr2545/tg_newspaper)](https://github.com/tiltozavr2545/tg_newspaper/releases/latest)
-![Платформы](https://img.shields.io/badge/платформы-macOS%20%7C%20Windows-lightgrey)
+[![Latest release](https://img.shields.io/github/v/release/tiltozavr2545/tg_newspaper)](https://github.com/tiltozavr2545/tg_newspaper/releases/latest)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows-lightgrey)
 
-### [⬇️ Скачать для macOS и Windows](https://github.com/tiltozavr2545/tg_newspaper/releases/latest)
-
-<p align="center">
-  <img src="docs/images/demo-cover.png" alt="Обложка номера: крупный заголовок-анонс, кадры и черная плашка с названием газеты" width="520">
-</p>
-
-<sub>Демо-номер собран из выдуманных новостей: настоящие номера содержат посты ваших каналов, поэтому в репозитории их нет.</sub>
-
-## 📰 Что это
-
-Лента в Telegram бесконечна: открыл «на минутку» — и пропал на час. TG Newspaper заменяет утренний скроллинг **печатным номером фиксированного объёма**. Лента закончилась — газета закончилась.
-
-- 📥 Берёт посты ваших каналов **за последние 24 часа** от момента нажатия кнопки. Никакого расписания и автозапуска: номер собирается, только когда вы сами нажмёте «Собрать газету».
-- 🧹 Отсеивает «не новости» (рекламу, пустые посты, медиа без подписи) и дубли — когда одна новость разошлась по нескольким каналам.
-- ⚖️ Нейросеть оценивает значимость каждой новости. Самое важное идёт в номер первым, проходное — не попадает, а длинное сокращается, чтобы в номер влезло больше.
-- 🗞️ Верстает номер: **обложка-афиша** в стиле таблоида (крикливые анонсы и кадры, статей на ней нет) и **до 6 полос новостей**. Текст не обрезается на полуслове: что не помещается, коротко пересказывает нейросеть. Смайлики и рекламные подписи каналов («Мы в MAX», «Подписаться») вычищаются, а фото печатаются там, где без них теряется смысл.
-- 🎯 **Учится на ваших интересах**: короткий онбординг при первом запуске и опрос после каждого номера («расставьте 5 постов по важности») подстраивают отбор под вас.
-- 📄 Отдаёт готовый номер в PDF: полосами A4 или склеенными листами A3.
-
-Всё работает **на вашем компьютере**: ключи и данные не уходят никуда, кроме самих Telegram и Gemini.
+### [⬇️ Download for macOS and Windows](https://github.com/tiltozavr2545/tg_newspaper/releases/latest)
 
 <p align="center">
-  <img src="docs/images/demo-page.png" alt="Лист новостей: мозаика из заметок разной ширины, где нужно — с фото" width="520">
+  <img src="docs/images/demo-cover.png" alt="Issue cover: a large headline announcement, photos, and a black masthead plate with the newspaper's name" width="520">
 </p>
 
-## ⚙️ Как это работает
+<sub>The demo issue is assembled from made-up news: real issues contain posts from your own channels, so they aren't in the repository.</sub>
+
+## 📰 What this is
+
+The Telegram feed never ends: you open it "for a minute" and vanish for an hour. TG Newspaper replaces morning scrolling with a **printed issue of fixed length**. The feed is endless — the newspaper isn't.
+
+- 📥 Pulls posts from your channels for **the last 24 hours** from the moment you press the button. No schedule, no auto-start: an issue is assembled only when you press "Assemble newspaper" yourself.
+- 🧹 Filters out "non-news" (ads, empty posts, media without a caption) and duplicates — when the same story is covered by several channels.
+- ⚖️ A neural network rates how important each story is. The most important goes into the issue first, filler doesn't make it in, and long pieces are shortened so more fits.
+- 🗞️ Lays out the issue: a tabloid-style **poster cover** (loud headlines and photos, no articles on it) plus **up to 6 pages of news**. Text is never cut off mid-sentence: whatever doesn't fit gets a short summary from the model instead. Emoji and channels' promotional taglines ("Follow us on MAX", "Subscribe") are stripped, and photos are printed only where dropping them would lose the point.
+- 🎯 **Learns your interests**: a short onboarding on first launch and a survey after every issue ("rank these 5 posts by importance") tune the selection to you.
+- 📄 Delivers the finished issue as a PDF: single A4 pages or merged A3 sheets.
+
+Everything runs **on your own computer**: keys and data never go anywhere except Telegram and Gemini themselves.
+
+<p align="center">
+  <img src="docs/images/demo-page.png" alt="A news page: a mosaic of notes of varying width, with photos where needed" width="520">
+</p>
+
+## ⚙️ How it works
 
 ```mermaid
 flowchart LR
-    TG["Telegram<br/>(MTProto, посты за 24 часа)"] --> H["Эвристики<br/>(пустое, реклама, копипаст)"]
-    H --> G["Gemini:<br/>новость или нет,<br/>значимость, сокращение"]
-    G --> D["Дедупликация<br/>(пересказы, уже напечатанное)"]
-    D --> L["Вёрстка<br/>(HTML/CSS в Chromium)"]
-    L --> P["PDF: A4 полосами<br/>или A3 листами"]
-    P -.-> PR["Печать на принтер<br/>(в разработке)"]
+    TG["Telegram<br/>(MTProto, posts from the last 24h)"] --> H["Heuristics<br/>(empty, ads, copy-paste)"]
+    H --> G["Gemini:<br/>news or not,<br/>importance, shortening"]
+    G --> D["Deduplication<br/>(retellings, already printed)"]
+    D --> L["Layout<br/>(HTML/CSS in Chromium)"]
+    L --> P["PDF: A4 pages<br/>or A3 sheets"]
+    P -.-> PR["Print to printer<br/>(in development)"]
 ```
 
-Telegram читается под обычным пользовательским аккаунтом (не через бота), потому что только так можно разово забрать историю канала за прошедшие сутки. Подробности — в конце README, в разделе «Для разработчиков».
+Telegram is read via a regular user account (not a bot), because that's the only way to pull a channel's history for the past day in one shot. Details are at the end of the README, in the "For developers" section.
 
-## 💾 Установка
+## 💾 Installation
 
-Нужен компьютер с macOS или Windows и интернет.
+You'll need a computer running macOS or Windows, and internet access.
 
 ### macOS
 
-1. Откройте страницу [Releases](https://github.com/tiltozavr2545/tg_newspaper/releases/latest) и скачайте **`TG-Newspaper-<версия>-mac.dmg`**.
-2. Откройте dmg и перетащите **TG Newspaper** в «Программы».
-3. Первое открытие. Приложение **без цифровой подписи**, поэтому macOS спросит подтверждение:
-   - правый клик по приложению → **«Открыть»** → **«Открыть»**;
-   - либо запустите как обычно, затем «Системные настройки» → «Конфиденциальность и безопасность» → **«Всё равно открыть»**.
+1. Open the [Releases](https://github.com/tiltozavr2545/tg_newspaper/releases/latest) page and download **`TG-Newspaper-<version>-mac.dmg`**.
+2. Open the dmg and drag **TG Newspaper** into "Applications".
+3. First launch. The app is **not code-signed**, so macOS will ask for confirmation:
+   - right-click the app → **"Open"** → **"Open"**;
+   - or launch it normally, then go to "System Settings" → "Privacy & Security" → **"Open Anyway"**.
 
 ### Windows
 
-1. На странице [Releases](https://github.com/tiltozavr2545/tg_newspaper/releases/latest) скачайте **`TG-Newspaper-<версия>-windows-setup.exe`** и запустите его. Права администратора не нужны, программа ставится в `%LOCALAPPDATA%\Programs\TG Newspaper`, ярлык появляется в меню «Пуск» (ярлык на рабочем столе — по желанию, галочка в установщике).
-2. Если SmartScreen показал «Windows защитила ваш компьютер» (установщик не подписан) — нажмите **«Подробнее»** → **«Выполнить в любом случае»**.
+1. On the [Releases](https://github.com/tiltozavr2545/tg_newspaper/releases/latest) page, download **`TG-Newspaper-<version>-windows-setup.exe`** and run it. No admin rights needed; the app installs to `%LOCALAPPDATA%\Programs\TG Newspaper`, and a shortcut appears in the Start menu (a desktop shortcut is optional, via a checkbox in the installer).
+2. If SmartScreen shows "Windows protected your PC" (the installer isn't signed) — click **"More info"** → **"Run anyway"**.
 
-### Первый запуск
+### First launch
 
-При первом запуске программа сама ставит всё, что ей нужно: менеджер [uv](https://docs.astral.sh/uv/), Python, библиотеки и браузер Chromium для вёрстки. Это занимает **2–3 минуты, нужен интернет**. Пока идёт подготовка, в браузере открыта страница ожидания, а потом она сама переходит в консоль на `http://localhost:8420/`. Консоль доступна только с вашего компьютера.
+On first launch the app sets up everything it needs by itself: the [uv](https://docs.astral.sh/uv/) package manager, Python, libraries, and the Chromium browser used for layout. This takes **2–3 minutes and requires internet**. While it's preparing, a waiting page is shown in the browser, which then automatically redirects to the console at `http://localhost:8420/`. The console is only reachable from your own computer.
 
-Следующие запуски быстрые. Повторный клик по иконке, пока консоль работает, просто открывает ещё одну вкладку.
+Subsequent launches are fast. Clicking the icon again while the console is already running just opens another tab.
 
-## 🧭 Настройка
+## 🧭 Setup
 
-Пока проект не настроен, консоль сама ведёт на **мастер настройки** из четырёх шагов — править файлы вручную не нужно. Любой шаг можно пройти заново позже (ссылка **«Настройки»** на главной странице).
+Until the project is configured, the console takes you straight to a **four-step setup wizard** — no need to edit files by hand. Any step can be redone later (the **"Settings"** link on the home page).
 
-Вам понадобится:
+You'll need:
 
-| Что | Зачем | Где взять |
+| What | Why | Where to get it |
 |---|---|---|
-| Отдельный Telegram-аккаунт | читать каналы | свой номер телефона |
-| `api_id` и `api_hash` | доступ к Telegram API | [my.telegram.org](https://my.telegram.org) |
-| Ключ Gemini | нейросеть отбирает и оценивает новости | [Google AI Studio](https://aistudio.google.com/app/apikey) |
-| Cloudflare Worker | прокси до Gemini (без него Gemini из РФ не отвечает) | бесплатный аккаунт [Cloudflare](https://dash.cloudflare.com) |
-| Список каналов | что читать | вы сами |
+| A separate Telegram account | to read channels | your own phone number |
+| `api_id` and `api_hash` | access to the Telegram API | [my.telegram.org](https://my.telegram.org) |
+| A Gemini key | the model selects and rates news | [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| A Cloudflare Worker | a proxy to Gemini (without it, Gemini doesn't respond from Russia) | a free [Cloudflare](https://dash.cloudflare.com) account |
+| A list of channels | what to read | you decide |
 
-### Шаг 1. Telegram API
+### Step 1. Telegram API
 
-> ⚠️ **Заведите для проекта отдельный аккаунт Telegram, не личный.** Программа входит в Telegram как человек, а файл сессии, который при этом создаётся, — это ключ ко всему аккаунту (не токен с ограниченными правами). Если он когда-нибудь утечёт, пострадает только отдельный аккаунт, а не ваш основной.
+> ⚠️ **Set up a separate Telegram account for this project — not your personal one.** The app logs into Telegram as a human user, and the session file it creates is the key to the whole account (not a token with limited rights). If it ever leaks, only the separate account is affected, not your main one.
 
-1. Откройте [my.telegram.org](https://my.telegram.org) и войдите по номеру телефона **этого отдельного аккаунта** (код придёт в Telegram).
-2. Выберите **«API development tools»** и создайте приложение: название и короткое имя — любые.
-3. Скопируйте **`api_id`** (число) и **`api_hash`** (длинная строка).
-4. В мастере вставьте их в карточку **«1. Telegram API»** и нажмите «Сохранить». Поле «Имя файла сессии» можно не менять.
+1. Go to [my.telegram.org](https://my.telegram.org) and log in with the phone number of **this separate account** (the code arrives via Telegram).
+2. Choose **"API development tools"** and create an app: the name and short name can be anything.
+3. Copy the **`api_id`** (a number) and **`api_hash`** (a long string).
+4. In the wizard, paste them into the **"1. Telegram API"** card and click "Save". You can leave the "Session file name" field as is.
 
-Бот-токен не нужен: программа читает каналы как пользователь.
+No bot token is needed: the app reads channels as a regular user.
 
-### Шаг 2. Вход в Telegram
+### Step 2. Log in to Telegram
 
-В карточке **«2. Вход в Telegram»**:
+In the **"2. Log in to Telegram"** card:
 
-1. Введите номер телефона аккаунта проекта (в формате `+79991234567`) → «Отправить код».
-2. Введите код, который Telegram пришлёт в приложение (обычно не по SMS) → «Войти».
-3. Если включена двухфакторная защита, дальше спросят пароль.
+1. Enter the project account's phone number (format `+79991234567`) → "Send code".
+2. Enter the code Telegram sends to the app (usually not via SMS) → "Log in".
+3. If two-factor auth is enabled, you'll be asked for the password next.
 
-Когда всё получилось, в карточке появится «Вход выполнен: имя аккаунта». Ошиблись номером — кнопка «Начать заново».
+Once it succeeds, the card will show "Logged in: account name". Entered the wrong number? Use the "Start over" button.
 
-### Шаг 3. Gemini и прокси Cloudflare
+### Step 3. Gemini and the Cloudflare proxy
 
-Для отбора и оценки новостей используется нейросеть **Gemini** (хватает бесплатного тарифа). Напрямую из России она не отвечает: `User location is not supported`. Поэтому **прокси через свой Cloudflare Worker обязателен**: Google видит адрес Cloudflare, а не ваш, и запросы проходят. Мастер не засчитает этот шаг, пока адрес прокси не заполнен.
+News selection and rating use the **Gemini** model (the free tier is enough). It doesn't respond directly from Russia: `User location is not supported`. That's why **a proxy through your own Cloudflare Worker is required**: Google sees Cloudflare's address instead of yours, and requests go through. The wizard won't accept this step until the proxy address is filled in.
 
-**3.1. Ключ Gemini.** Откройте [Google AI Studio](https://aistudio.google.com/app/apikey), создайте API-ключ и скопируйте его.
+**3.1. Gemini key.** Go to [Google AI Studio](https://aistudio.google.com/app/apikey), create an API key, and copy it.
 
-**3.2. Создайте Worker** (это делается один раз и занимает несколько минут):
+**3.2. Create a Worker** (a one-time step that takes a few minutes):
 
-1. Зайдите на <https://dash.cloudflare.com> (при необходимости бесплатно зарегистрируйтесь) → **Workers & Pages** → **Create** → **Worker**.
-2. Дайте имя, например `tg-newspaper-gemini`, и нажмите **Deploy**.
-3. Нажмите **Edit code**, удалите всё, что там есть, и вставьте содержимое файла [`cloudflare-worker.js`](cloudflare-worker.js) из этого репозитория. Это небольшой скрипт, который пересылает запросы к Gemini API; пропускает он только пути Gemini. Строку `PROXY_SECRET` оставьте пустой.
-4. Снова нажмите **Deploy**.
-5. Скопируйте адрес воркера вида `https://tg-newspaper-gemini.ВАШ-АККАУНТ.workers.dev`.
+1. Go to <https://dash.cloudflare.com> (sign up for free if needed) → **Workers & Pages** → **Create** → **Worker**.
+2. Give it a name, e.g. `tg-newspaper-gemini`, and click **Deploy**.
+3. Click **Edit code**, delete everything there, and paste in the contents of this repository's [`cloudflare-worker.js`](cloudflare-worker.js). It's a small script that forwards requests to the Gemini API; it only lets Gemini paths through. Leave the `PROXY_SECRET` line empty.
+4. Click **Deploy** again.
+5. Copy the worker's address, which looks like `https://tg-newspaper-gemini.YOUR-ACCOUNT.workers.dev`.
 
-**3.3. Заполните карточку «3. Gemini» в мастере:**
+**3.3. Fill in the "3. Gemini" card in the wizard:**
 
-| Поле | Что вписать |
+| Field | What to enter |
 |---|---|
-| `GEMINI_API_KEY` | ключ из AI Studio |
-| Модель | по умолчанию `gemini-3.5-flash-lite`, можно не менять |
-| `GEMINI_BASE_URL` (обязательно) | адрес вашего воркера. Только `https://`, слэш в конце срежется сам |
+| `GEMINI_API_KEY` | the key from AI Studio |
+| Model | defaults to `gemini-3.5-flash-lite`, fine to leave as is |
+| `GEMINI_BASE_URL` (required) | your worker's address. Only `https://`; a trailing slash is trimmed automatically |
 
-Нажмите **«Сохранить и проверить»**: программа сделает один дешёвый запрос к Gemini именно через ваш прокси и скажет, что не так (ключ не принят, модель не найдена, прокси недоступен, регион не поддерживается).
+Click **"Save and verify"**: the app will make one cheap request to Gemini through your proxy and report what's wrong, if anything (key rejected, model not found, proxy unreachable, region unsupported).
 
-### Шаг 4. Каналы
+### Step 4. Channels
 
-В карточке **«4. Каналы»** впишите каналы-источники **по одному на строку**. Подойдёт любой вид записи:
+In the **"4. Channels"** card, enter source channels **one per line**. Any of these formats work:
 
 ```
 durov
@@ -136,200 +136,200 @@ durov
 https://t.me/example_channel
 ```
 
-Программа сохранит чистые имена каналов. Нажмите **«Сохранить и проверить доступ»**: каждый канал проверяется через вашу сессию, и рядом с ним появится «доступен: название канала» или причина, почему не вышло (такого канала нет, канал приватный, это пользователь или бот).
+The app will store clean channel names. Click **"Save and check access"**: each channel is checked through your session, and next to it you'll see "accessible: channel name" or the reason it failed (no such channel, the channel is private, it's a user or a bot).
 
-**Рубрики.** Каналы можно разложить по рубрикам — в номере каждая рубрика печатается отдельной секцией с заголовком, в порядке как в списке (каналы без рубрики, если рубрики вообще заданы, идут последней секцией «Разное»). Строка, начинающаяся с `#`, — название рубрики (оно может быть из нескольких слов), каналы под ней относятся к ней. Каналы до первого заголовка остаются без рубрики:
+**Sections.** Channels can be grouped into sections — in the issue, each section prints as its own block with a heading, in the order they appear in the list (channels with no section, if any sections are defined at all, go last under a "Misc" section). A line starting with `#` names a section (it can be several words); channels listed under it belong to that section. Channels before the first heading stay without a section:
 
 ```
-# Новости
+# News
 rotondamedia
 mudak
 
-# Блогеры
+# Bloggers
 lvcai
 ```
 
-### Шаг 5 (необязательно). YouTube-каналы
+### Step 5 (optional). YouTube channels
 
-Карточка **«5. YouTube-каналы»** добавляет блок «Новые видео» в конце номера. Впишите каналы по одному на строку: `@handle`, ссылку `https://www.youtube.com/@handle` или `.../channel/UC...`, либо голый id `UC...`. При сохранении программа проверяет каналы по сети и подставляет их названия; если какую-то строку не удалось распознать, ничего не сохранится, а ошибки покажутся под формой. Шортсы в блок не попадают. Пустой список — без видео; для работы мастера этот шаг не нужен.
+The **"5. YouTube channels"** card adds a "New videos" block at the end of the issue. Enter channels one per line: `@handle`, a link like `https://www.youtube.com/@handle` or `.../channel/UC...`, or a bare `UC...` id. On save, the app checks the channels over the network and fills in their names; if a line can't be recognized, nothing is saved and the errors are shown under the form. Shorts are excluded from the block. An empty list means no videos; this step isn't required for the wizard to proceed.
 
-О подписке на каналы: аккаунт проекта удобно **подписать на все каналы-источники** (так задумано в плане проекта). Публичные каналы мастер проверяет по имени. Приватные каналы работают, только если аккаунт в них состоит, но ссылки-приглашения вида `t.me/+...` не поддерживаются: нужен публичный `username`.
+On following channels: it's convenient to have the project account **follow all source channels** (that's how the project is designed to work). The wizard checks public channels by name. Private channels only work if the account is already a member, and invite links like `t.me/+...` aren't supported: a public `username` is required.
 
-### Онбординг
+### Onboarding
 
-Когда все четыре шага зелёные, мастер предложит **онбординг** (`/onboarding`) — пару минут про вас:
+Once all four steps are green, the wizard offers **onboarding** (`/onboarding`) — a couple of minutes about you:
 
-- два текстовых поля: «Что интересно» и «Что неинтересно» (темы, каналы, форматы, свободным текстом);
-- до трёх раундов по 5 реальных постов из ваших каналов: расставьте их по важности, где 1 — самое важное. Раундов не будет, пока в базе нет прошлых прогонов, тогда сохранится только текст.
+- two text fields: "What interests you" and "What doesn't" (topics, channels, formats, free text);
+- up to three rounds of 5 real posts from your channels: rank them by importance, where 1 is the most important. There won't be any rounds until the database has past runs; until then, only the text fields are saved.
 
-Пока онбординг не пройден, кнопка сборки не запускает прогон. Если не хочется — есть кнопка «Пропустить»: газета тогда просто будет без персональной подстройки.
+Until onboarding is complete, the "Assemble" button won't start a run. If you'd rather skip it, there's a "Skip" button — the newspaper will just run without personal tuning.
 
-## 🖨️ Как пользоваться
+## 🖨️ How to use it
 
-1. Откройте **TG Newspaper** (иконка в «Программах» или в меню «Пуск»). В браузере откроется консоль.
-2. Нажмите **«🗞️ Собрать газету»**. Программа заберёт посты за последние 24 часа, отфильтрует их, уберёт дубли и свёрстает номер. Это занимает **несколько минут** (чтение Telegram, запросы к Gemini, вёрстка), страница обновится сама.
-3. Откроется **страница прогона**: сверху блок «Номер», ниже таблица всех постов с пометками «пошёл» или «отсеян» и причиной.
+1. Open **TG Newspaper** (the icon in "Applications" or the Start menu). The console opens in your browser.
+2. Click **"🗞️ Assemble newspaper"**. The app will pull posts from the last 24 hours, filter them, remove duplicates, and lay out the issue. This takes **a few minutes** (reading Telegram, calling Gemini, layout), and the page refreshes on its own.
+3. The **run page** opens: a "Issue" block at the top, and below it a table of all posts marked "included" or "filtered out", with the reason.
 
-В блоке «Номер»:
+In the "Issue" block:
 
-- **превью полос**: клик по картинке открывает полосу крупно;
-- **«Скачать PDF — N полос A4»**: каждая полоса на отдельной странице A4 (альбомной), печатается на обычном принтере;
-- **«Скачать PDF — N листа A3»**: то же самое, но по две полосы на лист формата A3 (297 × 420 мм). Полосы идут вплотную одна над другой без швов, и лист выглядит как единая страница. Так верстается и обложка: на ней один лист из двух полос;
-- **«Пересобрать номер»**: свёрстать заново по тому же прогону (если, например, что-то пошло не так при вёрстке: сам отбор при этом сохраняется).
+- **page previews**: click an image to open the page full-size;
+- **"Download PDF — N A4 pages"**: each page on its own A4 (landscape) sheet, ready for a regular printer;
+- **"Download PDF — N A3 sheets"**: the same content, but two pages per A3 sheet (297 × 420 mm). Pages sit flush against each other with no seam, so the sheet reads as a single page. The cover is laid out the same way: one sheet made of two pages;
+- **"Re-assemble issue"**: re-render the same run from scratch (useful if, say, something went wrong during layout — the underlying selection is kept).
 
-**Выпуск по времени суток.** Газету можно собирать несколько раз в день: на обложке и в шапке полос стоит Morning, Afternoon, Evening или Night edition — по тому, сколько времени на часах компьютера, когда вы нажали кнопку. Дата номера тоже берётся по часам компьютера, а имя PDF содержит дату и выпуск, например `tg-newspaper-2026-10-14-morning-a4.pdf`, так что номера одного дня не затирают друг друга.
+**Edition by time of day.** You can assemble the newspaper several times a day: the cover and page headers show a Morning, Afternoon, Evening, or Night edition — based on your computer's clock at the moment you pressed the button. The issue date is also taken from your computer's clock, and the PDF filename includes the date and edition, e.g. `tg-newspaper-2026-10-14-morning-a4.pdf`, so issues from the same day don't overwrite each other.
 
-Сколько в номере полос: обложка (2 полосы A4 = 1 лист A3) плюс до 6 полос новостей. Если новостей мало, номер получится короче. Но если за сутки в печать прошло меньше 10 новостей, номер не собирается: на странице прогона и в терминале так и написано («За сутки набралось мало новостей: N (нужно хотя бы 10) — номер не собран»).
+How many pages an issue has: the cover (2 A4 pages = 1 A3 sheet) plus up to 6 news pages. If there isn't much news, the issue will be shorter. But if fewer than 10 news items made it through in a day, no issue is assembled: the run page and the terminal will say so ("Not enough news today: N (need at least 10) — no issue assembled").
 
-PDF создаётся при первом скачивании (несколько секунд) и дальше берётся из кэша.
+The PDF is generated on first download (a few seconds) and served from cache after that.
 
-**Опрос после номера.** На главной появится блок «Оцените прошлый номер». В опросе 5 постов (часть была в номере, часть не поместилась): расставьте их по важности, 1 — самое важное. Подсказок нет специально: оценки модели и пометка «в номере» показываются только после отправки, на странице сравнения. Чем больше опросов, тем лучше газета угадывает ваш вкус; на главной видно, растёт ли совпадение с вашим порядком.
+**Survey after each issue.** The home page will show a "Rate the last issue" block. The survey has 5 posts (some were in the issue, some didn't fit): rank them by importance, 1 being most important. There are deliberately no hints — the model's scores and the "was in the issue" flag are only shown after you submit, on the comparison page. The more surveys you complete, the better the newspaper gets at matching your taste; the home page shows whether the match with your ranking is improving.
 
-**Как выключить.** Кнопка **«Выключить консоль»** внизу главной страницы (рядом написана версия программы). Запустить снова можно той же иконкой.
+**Shutting down.** The **"Shut down console"** button at the bottom of the home page (the app version is shown next to it). Start it again with the same icon.
 
-## 🔒 Где хранятся данные и безопасность
+## 🔒 Where data is stored, and security
 
-Данные лежат **вне программы**:
+Data lives **outside the app**:
 
-| Система | Папка |
+| OS | Folder |
 |---|---|
 | macOS | `~/Library/Application Support/TG Newspaper` |
 | Windows | `%LOCALAPPDATA%\TG Newspaper` |
 
-Внутри:
+Inside:
 
-| Что | Где |
+| What | Where |
 |---|---|
-| Ключи (`TG_API_HASH`, `GEMINI_API_KEY`, адрес прокси) | `.env` |
-| Сессия Telegram | файл `tg_newspaper.session` (имя можно сменить в шаге 1) |
-| Список каналов | `config/channels.yaml` |
-| База (посты, прогоны, профиль читателя, отзывы) | `data/` |
-| Готовые номера: полосы и PDF | `data/issues/run_<номер прогона>/` |
-| Логи | `data/console.log`, `data/setup.log` |
+| Keys (`TG_API_HASH`, `GEMINI_API_KEY`, proxy address) | `.env` |
+| Telegram session | file `tg_newspaper.session` (the name can be changed in step 1) |
+| Channel list | `config/channels.yaml` |
+| Database (posts, runs, reader profile, feedback) | `data/` |
+| Finished issues: pages and PDFs | `data/issues/run_<run id>/` |
+| Logs | `data/console.log`, `data/setup.log` |
 
-Про безопасность:
+On security:
 
-- Ключи хранятся **только на вашем компьютере**. Файлы `.env` и сессии создаются с правами только для владельца (0600).
-- В интерфейсе секреты показываются в маске (`••••1234`), в логи не пишутся. Пустое поле секрета при повторной настройке значит «не менять».
-- Ключи не попадают в репозиторий и в установщик: они появляются только в вашей папке данных.
-- Наружу программа ходит только в Telegram и в Gemini (через ваш прокси). Консоль слушает только `localhost`.
+- Keys are stored **only on your own computer**. The `.env` and session files are created with owner-only permissions (0600).
+- The UI shows secrets masked (`••••1234`) and never logs them. Leaving a secret field empty when reconfiguring means "don't change it".
+- Keys never end up in the repository or the installer: they only ever exist in your own data folder.
+- The app only talks to Telegram and Gemini (through your proxy) over the network. The console only listens on `localhost`.
 
-**Удаление.** Деинсталляция (перетаскивание приложения в корзину на macOS, «Приложения» в Windows) **данные не трогает**: настройки, сессия и номера останутся. Чтобы стереть всё, удалите папку данных из таблицы выше вручную.  Закрыть сессию совсем можно и в самом Telegram: «Настройки» → «Устройства».
+**Removal.** Uninstalling (dragging the app to the Trash on macOS, "Apps" on Windows) **doesn't touch your data**: settings, the session, and past issues remain. To erase everything, delete the data folder from the table above by hand. You can also end the session entirely from Telegram itself: "Settings" → "Devices".
 
-## 🔄 Обновление
+## 🔄 Updating
 
-Скачайте новую версию со страницы [Releases](https://github.com/tiltozavr2545/tg_newspaper/releases/latest) и установите поверх старой (на macOS — заменить приложение в «Программах»). **Данные сохранятся**: они лежат в отдельной папке. После обновления первый запуск может ещё раз подготовить окружение, это занимает пару минут.
+Download the new version from the [Releases](https://github.com/tiltozavr2545/tg_newspaper/releases/latest) page and install it over the old one (on macOS, replace the app in "Applications"). **Your data is preserved**: it lives in a separate folder. After updating, the first launch may prepare the environment again, which takes a couple of minutes.
 
-## 🛟 Если что-то не работает
+## 🛟 If something doesn't work
 
-| Что случилось | Что делать |
+| What happened | What to do |
 |---|---|
-| macOS: «приложение повреждено» / не открывается | Приложение не подписано. Правый клик → «Открыть», либо «Системные настройки» → «Конфиденциальность и безопасность» → «Всё равно открыть». |
-| Windows: SmartScreen | «Подробнее» → «Выполнить в любом случае». |
-| Страница ожидания висит дольше 5 минут | Проверьте интернет. Если окружение не поставилось, программа покажет окно с ошибкой; подробности в `data/setup.log` в папке данных. |
-| «Консоль не поднялась за 90 секунд» | Откройте `data/console.log` (на Windows ещё и `data/console.err.log`) в папке данных: там причина. |
-| Консоль не открывается по адресу `http://localhost:8420/` | Порт **8420** занят другой программой или консоль не запустилась. Закройте то, что его занимает, и откройте TG Newspaper снова; лог — `data/console.log`. |
-| `User location is not supported` | Gemini видит ваш регион как неподдерживаемый: проверьте, что в `GEMINI_BASE_URL` стоит адрес вашего воркера, а воркер задеплоен. Проверить вручную: откройте `https://<ваш-воркер>.workers.dev/v1beta/models?key=ВАШ_КЛЮЧ`: должен вернуться список моделей, а не ошибка региона. |
-| «Ключ не принят Gemini» | Создайте ключ заново в Google AI Studio. |
-| «Модель не найдена» | Проверьте название модели и адрес прокси: воркер пропускает только пути, начинающиеся с `/v1`. |
-| Канал в мастере «не найден» | Проверьте `username`; для приватных каналов аккаунт проекта должен в них состоять. |
-| Кнопка «Собрать газету» ведёт на онбординг | Пройдите его или нажмите «Пропустить». |
-| Шрифты на Windows выглядят иначе | Шрифты «PT Serif» и «Superclarendon» есть в macOS; на Windows вёрстка использует запасные (Georgia, Times). Переносы и разбивка по полосам при этом всё равно считаются в браузере, но вид будет отличаться. |
-| Прогон упал | Страница «Прогон не удался» покажет причину (сбой Telegram или Gemini); сохранённые прогоны остаются, можно нажать кнопку ещё раз. |
+| macOS: "app is damaged" / won't open | The app isn't signed. Right-click → "Open", or "System Settings" → "Privacy & Security" → "Open Anyway". |
+| Windows: SmartScreen | "More info" → "Run anyway". |
+| The waiting page hangs for more than 5 minutes | Check your internet connection. If setup failed, the app shows an error window; details are in `data/setup.log` in the data folder. |
+| "Console didn't start within 90 seconds" | Open `data/console.log` (on Windows, also `data/console.err.log`) in the data folder: the reason is there. |
+| The console won't open at `http://localhost:8420/` | Port **8420** is taken by another program, or the console failed to start. Close whatever's using the port and open TG Newspaper again; log: `data/console.log`. |
+| `User location is not supported` | Gemini sees your region as unsupported: make sure `GEMINI_BASE_URL` points to your worker and that the worker is deployed. To check manually, open `https://<your-worker>.workers.dev/v1beta/models?key=YOUR_KEY`: it should return a list of models, not a region error. |
+| "Gemini rejected the key" | Create a new key in Google AI Studio. |
+| "Model not found" | Check the model name and the proxy address: the worker only forwards paths starting with `/v1`. |
+| A channel in the wizard shows "not found" | Check the `username`; for private channels, the project account must already be a member. |
+| The "Assemble newspaper" button goes to onboarding | Complete it, or click "Skip". |
+| Fonts look different on Windows | The "PT Serif" and "Superclarendon" fonts exist on macOS; on Windows, layout falls back to substitutes (Georgia, Times). Line breaks and page splits are still computed in the browser either way, but the look will differ. |
+| A run failed | The "Run failed" page shows the reason (a Telegram or Gemini failure); saved runs are kept, and you can just press the button again. |
 
-## 🗺️ Статус и планы
+## 🗺️ Status and roadmap
 
-Первая версия [выпущена](https://github.com/tiltozavr2545/tg_newspaper/releases/tag/v0.1.0): готовые приложения для macOS и Windows.
+The first version has [shipped](https://github.com/tiltozavr2545/tg_newspaper/releases/tag/v0.1.0): ready-to-use apps for macOS and Windows.
 
-| Этап | Что | Состояние |
+| Stage | What | Status |
 |---|---|---|
-| 0–1 | Подготовка, сбор истории каналов | ✅ |
-| 2 | Фильтрация и дедупликация | ✅ |
-| 3 | Вёрстка и рендер номера | ✅ |
-| 5 | Консоль с кнопкой, мастер настройки, номер и PDF прямо на странице прогона, установщики | ✅ |
-| 6 | Персонализация: онбординг, опросы, личная оценка значимости | ✅ (проверка на живых данных ещё впереди) |
-| 4 | **Печать на принтер** по локальной сети | ⏳ в разработке |
-| 7 | Рубрики: каналы группируются в секции, блок «Новые видео» с YouTube | ✅ |
-| 8 | Управление каналами и порогами фильтрации в самом интерфейсе | 🔜 |
+| 0–1 | Setup, channel history collection | ✅ |
+| 2 | Filtering and deduplication | ✅ |
+| 3 | Layout and issue rendering | ✅ |
+| 5 | Console with a button, setup wizard, issue and PDF right on the run page, installers | ✅ |
+| 6 | Personalization: onboarding, surveys, personal importance scoring | ✅ (real-world validation still ahead) |
+| 4 | **Printing** over the local network | ⏳ in progress |
+| 7 | Sections: channels grouped into blocks, "New videos" block from YouTube | ✅ |
+| 8 | Managing channels and filtering thresholds right in the UI | 🔜 |
 
-Подробнее: [бриф проекта](docs/project-brief.md), [план реализации](docs/implementation-plan.md), [отложенное и открытые вопросы](docs/future-development.md).
+More detail: [project brief](docs/project-brief.md), [implementation plan](docs/implementation-plan.md), [deferred items and open questions](docs/future-development.md).
 
-Пока печать не готова, PDF из консоли можно распечатать любым принтером самостоятельно.
+Until printing is ready, you can print the PDF from the console yourself, on any printer.
 
 ---
 
-## 🛠️ Для разработчиков
+## 🛠️ For developers
 
 <details>
-<summary>Запуск из исходников, структура кода, релизы</summary>
+<summary>Running from source, code structure, releases</summary>
 
-### Запуск из исходников
+### Running from source
 
-Нужен [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
+Requires [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
 ```bash
 uv sync
 uv run playwright install chromium
-uv run python scripts/console.py     # консоль на http://localhost:8420/
-uv run tg-newspaper                  # тот же прогон из терминала, без браузера
-uv run python scripts/render_preview.py [run_id] [--pages N]   # пересборка номера по сохранённому прогону
+uv run python scripts/console.py     # console at http://localhost:8420/
+uv run tg-newspaper                  # the same run, from the terminal, no browser
+uv run python scripts/render_preview.py [run_id] [--pages N]   # re-render an issue from a saved run
 ```
 
-В режиме разработки всё лежит в репозитории: `.env`, `config/channels.yaml`, `data/`, файл сессии. Скопировать шаблоны можно вручную (`.env.example`, `config/channels.example.yaml`), а сессию получить терминальным `uv run python scripts/telethon_login.py`, но проще пройти тот же мастер в консоли.
+In dev mode everything lives in the repo: `.env`, `config/channels.yaml`, `data/`, the session file. You can copy the templates by hand (`.env.example`, `config/channels.example.yaml`), and get a session via the terminal with `uv run python scripts/telethon_login.py`, though it's easier to just go through the same wizard in the console.
 
-**Одна кнопка на macOS.** `scripts/make_app.sh` создаёт `~/Applications/TG Newspaper.app` (другой каталог — первым аргументом): консоль поднимается в фоне и открывается в браузере. Вся логика запуска — в `scripts/launch.sh`.
+**One-click launch on macOS.** `scripts/make_app.sh` creates `~/Applications/TG Newspaper.app` (pass a different directory as the first argument): it starts the console in the background and opens it in the browser. All the launch logic lives in `scripts/launch.sh`.
 
-**Переменные окружения** (для проверок, в обычной работе не задаются): `TG_NEWSPAPER_HOME` — базовый каталог всех данных пользователя (так работает релиз), точечные `TG_NEWSPAPER_ENV`, `TG_NEWSPAPER_CHANNELS`, `TG_NEWSPAPER_SESSION_DIR`, `TG_NEWSPAPER_DB`; для лаунчеров — `TG_NEWSPAPER_PORT`, `TG_NEWSPAPER_RUN_DIR`, `TG_NEWSPAPER_NO_OPEN`.
+**Environment variables** (for testing; not set in normal use): `TG_NEWSPAPER_HOME` — the base directory for all user data (this is how the release build works), plus the individual `TG_NEWSPAPER_ENV`, `TG_NEWSPAPER_CHANNELS`, `TG_NEWSPAPER_SESSION_DIR`, `TG_NEWSPAPER_DB`; for launchers — `TG_NEWSPAPER_PORT`, `TG_NEWSPAPER_RUN_DIR`, `TG_NEWSPAPER_NO_OPEN`.
 
-**Демо-картинки для README:** `uv run python scripts/make_demo_images.py` (синтетические посты, без Telegram и Gemini).
+**Demo images for the README:** `uv run python scripts/make_demo_images.py` (synthetic posts, no Telegram or Gemini involved).
 
-### Структура
+### Structure
 
 ```
-docs/                      — бриф, план реализации, отложенное и открытые вопросы
-cloudflare-worker.js       — прокси до Gemini
-src/tg_newspaper/          — сам пайплайн
-scripts/                   — консоль, лаунчеры, сборка релиза
-packaging/                 — установщик Windows, иконки, текст релиза
+docs/                      — brief, implementation plan, deferred items and open questions
+cloudflare-worker.js       — proxy to Gemini
+src/tg_newspaper/          — the pipeline itself
+scripts/                   — console, launchers, release build
+packaging/                 — Windows installer, icons, release text
 ```
 
-| Модуль (`src/tg_newspaper/`) | Что делает |
+| Module (`src/tg_newspaper/`) | What it does |
 |---|---|
-| `collector.py` | сбор истории каналов через Telethon |
-| `filtering.py`, `dedup.py`, `paraphrase_dedup.py`, `history_dedup.py` | эвристики, копипаст-дедуп, дедуп пересказов, дедуп против напечатанного в последних 5 номерах |
-| `classifier.py` | Gemini: новость или нет, значимость, сокращение текста, анонсы обложки |
-| `personalization.py`, `feedback.py` | профиль читателя, персональная оценка значимости, подбор постов для опросов и метрика совпадения порядка |
-| `layout.py` | мозаичная вёрстка и рендер номера в PNG (Playwright/Chromium) |
-| `issue_pdf.py` | PDF номера из PNG-полос: A4 по полосам или склеенные листы A3 |
-| `pipeline.py` | единый прогон: сбор → фильтрация → сборка номера |
-| `storage.py` | SQLite: посты, прогоны, состав номеров, профиль читателя, отзывы |
-| `setup_wizard.py`, `setup_html.py` | логика и страница мастера настройки |
-| `report_html.py`, `feedback_html.py` | страницы консоли: главная, прогон, онбординг, опрос, сравнение |
-| `config.py` | пути данных (всегда через его функции, не от `__file__`) |
+| `collector.py` | collects channel history via Telethon |
+| `filtering.py`, `dedup.py`, `paraphrase_dedup.py`, `history_dedup.py` | heuristics, copy-paste dedup, retelling dedup, dedup against what was printed in the last 5 issues |
+| `classifier.py` | Gemini: news or not, importance, text shortening, cover headlines |
+| `personalization.py`, `feedback.py` | reader profile, personal importance scoring, picking posts for surveys, and the ranking-match metric |
+| `layout.py` | mosaic layout and rendering the issue to PNG (Playwright/Chromium) |
+| `issue_pdf.py` | the issue's PDF from PNG pages: A4 per page, or merged A3 sheets |
+| `pipeline.py` | the single run: collect → filter → assemble the issue |
+| `storage.py` | SQLite: posts, runs, issue contents, reader profile, feedback |
+| `setup_wizard.py`, `setup_html.py` | setup wizard logic and page |
+| `report_html.py`, `feedback_html.py` | console pages: home, run, onboarding, survey, comparison |
+| `config.py` | data paths (always accessed through its functions, never from `__file__`) |
 
-### Как выпустить релиз
+### How to cut a release
 
-Версия — по PEP 440 (`0.2.0`, `0.2.0rc1`), берётся из тега:
+The version follows PEP 440 (`0.2.0`, `0.2.0rc1`) and is taken from the tag:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)) соберёт dmg и setup.exe, прогонит смоук-тест запуска и опубликует релиз с текстом из [`packaging/release-notes.md`](packaging/release-notes.md). Приложения без подписи; Playwright закреплён на 1.50.0, не поднимать.
+GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)) builds the dmg and setup.exe, runs a launch smoke test, and publishes the release with the text from [`packaging/release-notes.md`](packaging/release-notes.md). The apps are unsigned; Playwright is pinned to 1.50.0 — don't bump it.
 
-### Почему MTProto, а не Bot API
+### Why MTProto instead of the Bot API
 
-Bot API не даёт боту метода «прочитать историю канала за прошедшие сутки»: бот получает посты только по мере появления (`getUpdates`/webhook). Агенту же нужно по нажатию кнопки разово забрать историю канала за период «с этого момента назад», без постоянно работающего процесса-слушателя. MTProto под пользовательским аккаунтом (Telethon) это умеет. Обратная сторона: файл сессии — ключ ко всему аккаунту, поэтому аккаунт отдельный, а сессия хранится как секрет. Подробнее — в [AGENTS.md](AGENTS.md) и [docs/project-brief.md](docs/project-brief.md).
+The Bot API gives bots no way to "read a channel's history for the past day": a bot only receives posts as they arrive (`getUpdates`/webhook). The agent, on the other hand, needs to pull a channel's history for a period "back from now" in one shot, on button press, with no permanently running listener process. MTProto under a regular user account (Telethon) can do this. The trade-off: the session file is the key to the whole account, which is why it's a separate account, and the session is stored as a secret. More detail in [AGENTS.md](AGENTS.md) and [docs/project-brief.md](docs/project-brief.md).
 
-Наверстывание пропущенных запусков сознательно не делается: каждый прогон берёт свои последние 24 часа.
+Catching up on missed runs is deliberately not implemented: every run just takes its own last 24 hours.
 
-### Печать (план)
+### Printing (planned)
 
-HP Color LaserJet Pro MFP M377dw, только по локальной сети (AirPrint/CUPS/IPP): облачная печать (HP ePrint) закрыта производителем в январе 2023 года.
+HP Color LaserJet Pro MFP M377dw, local network only (AirPrint/CUPS/IPP): cloud printing (HP ePrint) was shut down by the manufacturer in January 2023.
 
-### Ограничения
+### Limitations
 
-- Шрифты «PT Serif»/«Superclarendon» — системные шрифты macOS; на Windows вёрстка использует запасные.
-- Контекст для AI-агентов и принятые решения — [AGENTS.md](AGENTS.md).
+- The "PT Serif"/"Superclarendon" fonts are built into macOS; on Windows, layout falls back to substitutes.
+- Context and decisions for AI agents — [AGENTS.md](AGENTS.md).
 
 </details>

@@ -1,15 +1,17 @@
-"""Обратная связь читателя (Этап 6 п.2-3): подбор постов для опросов
-"расставь по важности" и метрика совпадения порядка читателя с порядком модели.
+"""Reader feedback (Stage 6 items 2-3): selecting posts for "rank by
+importance" surveys and the metric for how well the reader's order matches
+the model's order.
 
-Идея опроса: читатель расставляет 5 постов по порядку (1 — самое важное для
-него, 5 — наименее). Сравнивая этот порядок с порядком оценок модели, видим,
-где модель ошибается именно для него. Чтобы сравнение было информативным,
-пять постов берутся с РАЗНЫМИ оценками модели (по возможности по одному на
-каждый уровень 1..5): если у всех пяти оценка одинаковая, порядок читателя
-не с чем сравнивать.
+The survey's idea: the reader ranks 5 posts in order (1 — most important to
+them, 5 — least). Comparing this order to the model's score order shows
+where the model is wrong specifically for them. For the comparison to be
+informative, the five posts are picked with DIFFERENT model scores (one per
+level 1..5 where possible): if all five have the same score, there's
+nothing to compare the reader's order against.
 
-Слой отделён от консоли (scripts/console.py) и HTML (feedback_html.py): здесь
-только выбор, метрика и работа с БД через storage, без вёрстки и без сети.
+This layer is separate from the console (scripts/console.py) and the HTML
+(feedback_html.py): here there's only selection, the metric, and DB access
+through storage, no layout and no network.
 """
 
 from __future__ import annotations
@@ -28,36 +30,39 @@ from .storage import (
     load_post_texts,
 )
 
-# Сколько постов в одном опросе и раунде онбординга.
+# How many posts in one survey and one onboarding round.
 SURVEY_SIZE = 5
-# Опрос после номера: сколько постов из номера и сколько — выброшенных из него
-# (included=1, но не попавших в issue_posts: не хватило места в номере).
-# Выброшенные нужны затем, что именно по ним видно, не зря ли модель их
-# отодвинула: в номере все посты уже "прошли" оценку модели.
+# Survey after an issue: how many posts from the issue and how many —
+# dropped from it (included=1, but not in issue_posts: not enough room in
+# the issue). Dropped posts are needed because they're exactly where you
+# can see whether the model was right to push them aside: in the issue, all
+# posts have already "passed" the model's scoring.
 ISSUE_SURVEY_IN_ISSUE = 3
 ISSUE_SURVEY_DROPPED = 2
-# Онбординг: 3 раунда по 5 постов = 15 постов с реальными оценками.
+# Onboarding: 3 rounds of 5 posts = 15 posts with real scores.
 ONBOARDING_ROUNDS = 3
-# Из скольких самых свежих постов (с importance>0) выбирать раунды
-# онбординга: свежие читателю понятнее (он помнит контекст), но пул должен
-# быть шире 15, иначе "разнесение по уровням" будет выбирать не из чего.
+# How many of the most recent posts (with importance>0) to pick onboarding
+# rounds from: recent posts are easier for the reader to recall context
+# for, but the pool must be wider than 15, otherwise "spreading across
+# levels" would have nothing to choose from.
 ONBOARDING_POOL_LIMIT = 60
 
 
 def model_score(outcome: PostOutcome) -> int:
-    """ЕДИНСТВЕННОЕ место, откуда в опросах берётся "оценка модели" поста.
+    """The ONE place from which surveys get a post's "model score".
 
-    Это итоговая оценка (Этап 6 п.4: смесь generic и персональной, у старых
-    прогонов — generic, 0 — неизвестно) через pipeline.effective_importance.
-    Подбор постов, метрика совпадения и фиксация model_score в feedback_items
-    берут её отсюда и нигде больше outcome.importance напрямую не читают.
+    This is the final score (Stage 6 item 4: a blend of generic and
+    personal, for old runs — generic, 0 — unknown) via
+    pipeline.effective_importance. Post selection, the agreement metric, and
+    recording model_score in feedback_items all take it from here, and
+    nowhere else is outcome.importance read directly.
     """
     return effective_importance(outcome)
 
 
 @dataclass(frozen=True)
 class Candidate:
-    """Пост-кандидат в опрос: исход прогона + оценка модели на сейчас."""
+    """A post candidate for a survey: a run outcome + the model's current score."""
     outcome: PostOutcome
     in_issue: bool
     score: int
@@ -68,9 +73,9 @@ class Candidate:
 
 
 def _targets(count: int) -> list[int]:
-    """Целевые уровни оценки для count постов, равномерно по шкале 5..1.
-    Для 5 постов — ровно 5,4,3,2,1; для меньшего числа (мало постов в базе) —
-    растянутые на всю шкалу, чтобы всё равно покрыть и верх, и низ."""
+    """Target score levels for count posts, evenly spread over the 5..1 scale.
+    For 5 posts — exactly 5,4,3,2,1; for fewer (few posts in the DB) —
+    stretched over the whole scale, to still cover both the top and the bottom."""
     if count <= 0:
         return []
     if count == 1:
@@ -81,20 +86,21 @@ def _targets(count: int) -> list[int]:
 def pick_spread(
     pools: list[tuple[list[Candidate], int]], rng: random.Random
 ) -> list[Candidate]:
-    """Жадный подбор постов с разнесёнными по шкале оценками модели.
+    """Greedy selection of posts with model scores spread across the scale.
 
-    pools — группы кандидатов с квотой: [(кандидаты, сколько взять), ...]
-    (для опроса после номера — две группы: из номера (3) и выброшенные (2);
-    для онбординга — одна на 5). Для целевых уровней 5,4,3,2,1 по очереди
-    берётся ближайший по оценке ещё не выбранный пост из любой группы, у
-    которой квота не исчерпана; при равной близости — случайный (rng), чтобы
-    повторные опросы не показывали одни и те же посты. Жадность не оптимальна,
-    но проста и предсказуема; оптимум тут не нужен — важно лишь не получить
-    пять одинаковых оценок, когда в базе есть разные.
+    pools — groups of candidates with a quota: [(candidates, how many to
+    take), ...] (for a post-issue survey — two groups: from the issue (3)
+    and dropped (2); for onboarding — one group of 5). For target levels
+    5,4,3,2,1 in turn, the closest-scoring not-yet-chosen post is taken from
+    any group whose quota isn't exhausted; ties in closeness are broken
+    randomly (rng), so repeated surveys don't show the same posts. Greedy
+    isn't optimal, but it's simple and predictable; optimality isn't needed
+    here — all that matters is not ending up with five identical scores
+    when the DB has different ones.
 
-    Если кандидатов меньше квоты — берётся сколько есть. Результат в порядке
-    выбора (по убыванию целевого уровня), НЕ в порядке показа — перемешивает
-    вызывающий (shuffle_for_display).
+    If there are fewer candidates than the quota, whatever is available is
+    taken. The result is in selection order (descending target level), NOT
+    in display order — the caller shuffles it (shuffle_for_display).
     """
     available = [list(cands) for cands, _ in pools]
     quota = [q for _, q in pools]
@@ -106,13 +112,13 @@ def pick_spread(
             if quota[gi] <= 0:
                 continue
             for ci, cand in enumerate(group):
-                # Третий компонент — случайный разрыв ничьих: сравнение
-                # кортежей берёт его, только если расстояния равны.
+                # The third component is a random tiebreaker: tuple
+                # comparison only uses it when the distances are equal.
                 rank = (abs(cand.score - target), rng.random(), gi, ci)
                 if best is None or rank < best:
                     best = rank
         if best is None:
-            break  # кандидаты в группах с остатком квоты кончились
+            break  # candidates ran out in groups that still had quota left
         _, _, gi, ci = best
         chosen.append(available[gi].pop(ci))
         quota[gi] -= 1
@@ -120,17 +126,19 @@ def pick_spread(
 
 
 def shuffle_for_display(cands: list[Candidate], rng: random.Random) -> list[Candidate]:
-    """Случайный порядок показа: не по оценке, чтобы не подталкивать читателя."""
+    """Random display order: not by score, so as not to nudge the reader."""
     shuffled = list(cands)
     rng.shuffle(shuffled)
     return shuffled
 
 
 def _issue_quotas(in_count: int, dropped_count: int) -> tuple[int, int]:
-    """Квоты (из номера, выброшенные) для опроса. Целевая 3/2; если выброшенных
-    меньше двух — недостающее добивается из номера (спецификация опроса); если
-    и из номера меньше трёх — берём сколько есть, а свободные места отдаём
-    остальным выброшенным (опрос лучше полный, чем из двух-трёх постов)."""
+    """Quotas (from the issue, dropped) for the survey. Target is 3/2; if
+    there are fewer than two dropped posts, the shortfall is made up from
+    the issue (the survey's spec); if the issue also has fewer than three,
+    we take however many there are and give the free slots to the
+    remaining dropped posts (a full survey is better than one with two or
+    three posts)."""
     dropped = min(ISSUE_SURVEY_DROPPED, dropped_count)
     in_issue = min(SURVEY_SIZE - dropped, in_count)
     dropped = min(dropped_count, SURVEY_SIZE - in_issue)
@@ -140,9 +148,9 @@ def _issue_quotas(in_count: int, dropped_count: int) -> tuple[int, int]:
 def issue_candidates(
     conn: sqlite3.Connection, run_id: int
 ) -> tuple[list[Candidate], list[Candidate]]:
-    """(посты номера, выброшенные из номера) прогона run_id. Выброшенные —
-    outcomes с included=1, которых нет в issue_posts. Оценка модели — через
-    model_score, не напрямую из importance."""
+    """(issue posts, posts dropped from the issue) of run_id. Dropped are
+    outcomes with included=1 that aren't in issue_posts. The model score
+    comes via model_score, not directly from importance."""
     printed = load_issue_texts(conn, run_id)
     in_issue: list[Candidate] = []
     dropped: list[Candidate] = []
@@ -158,10 +166,10 @@ def issue_candidates(
 def create_issue_survey(
     conn: sqlite3.Connection, run_id: int, rng: random.Random | None = None
 ) -> int | None:
-    """Опрос по номеру прогона run_id; создаётся лениво при первом открытии и
-    дальше тот же (элементы зафиксированы в БД — повторное открытие не
-    пересэмплирует и не плодит опросы). None — постов слишком мало (<2), чтобы
-    было что расставлять."""
+    """Survey for run_id's issue; created lazily on first open and stays the
+    same afterward (items are recorded in the DB — reopening doesn't
+    resample or spawn new surveys). None — too few posts (<2) to have
+    anything to rank."""
     existing = list_surveys(conn, "issue", run_id=run_id)
     if existing:
         return existing[0].survey_id
@@ -184,12 +192,12 @@ def _create(
 
 
 def onboarding_pool(conn: sqlite3.Connection) -> list[Candidate]:
-    """Пул для онбординга: посты с оценкой модели > 0 из всех прогонов, без
-    повторов одного поста (берётся из самого свежего прогона), самые свежие по
-    времени публикации — первыми, не больше ONBOARDING_POOL_LIMIT."""
+    """The onboarding pool: posts with a model score > 0 from all runs, with
+    no repeats of the same post (taken from its most recent run), most
+    recently published first, no more than ONBOARDING_POOL_LIMIT."""
     seen: set[tuple[str, int]] = set()
     pool: list[Candidate] = []
-    for run in list_runs(conn):  # новые прогоны первыми
+    for run in list_runs(conn):  # newest runs first
         for o in load_run(conn, run.run_id):
             cand = Candidate(o, False, model_score(o))
             if cand.score <= 0 or cand.key in seen:
@@ -203,11 +211,11 @@ def onboarding_pool(conn: sqlite3.Connection) -> list[Candidate]:
 def create_onboarding_surveys(
     conn: sqlite3.Connection, rng: random.Random | None = None
 ) -> list[int]:
-    """Раунды ранжирования онбординга (до 3 по 5 постов, без повторов между
-    раундами), каждый — отдельный опрос. Идемпотентно: если онбординговые
-    опросы уже созданы, возвращает их (читатель не получает другие посты при
-    повторном открытии формы). Пустая база / слишком мало постов — меньше
-    раундов (в пределе пустой список); раунд из <2 постов не создаётся."""
+    """Onboarding ranking rounds (up to 3 of 5 posts, no repeats between
+    rounds), each a separate survey. Idempotent: if onboarding surveys
+    already exist, returns them (the reader doesn't get different posts on
+    reopening the form). An empty DB / too few posts means fewer rounds (an
+    empty list in the limit); a round with <2 posts isn't created."""
     existing = list_surveys(conn, "onboarding")
     if existing:
         return [s.survey_id for s in existing]
@@ -219,16 +227,16 @@ def create_onboarding_surveys(
         if len(picked) < 2:
             break
         picked_keys = {c.key for c in picked}
-        pool = [c for c in pool if c.key not in picked_keys]  # без повторов между раундами
+        pool = [c for c in pool if c.key not in picked_keys]  # no repeats between rounds
         ids.append(_create(conn, "onboarding", None, shuffle_for_display(picked, rng)))
     return ids
 
 
 def validate_ranks(ranks: dict[tuple[str, int], int | None]) -> str | None:
-    """Проверка ответа: у каждого поста место, места — ровно 1..n без
-    повторов (читатель РАССТАВЛЯЕТ посты, а не оценивает каждый отдельно:
-    две единицы не несут информации о порядке). Возвращает текст ошибки
-    для читателя или None, если всё в порядке."""
+    """Validates the answer: every post has a rank, ranks are exactly 1..n
+    with no repeats (the reader RANKS the posts rather than scoring each
+    one separately: two 1's carry no information about order). Returns the
+    error text for the reader, or None if everything's fine."""
     n = len(ranks)
     values = list(ranks.values())
     if any(v is None for v in values):
@@ -239,22 +247,24 @@ def validate_ranks(ranks: dict[tuple[str, int], int | None]) -> str | None:
 
 
 def agreement(user_ranks: list[int], scores: list[int]) -> float | None:
-    """Совпадение порядка читателя с порядком модели — Kendall tau-b, -1..1
-    (1 — порядок совпал полностью, -1 — прямо противоположный).
+    """How well the reader's order matches the model's order — Kendall
+    tau-b, -1..1 (1 — orders match completely, -1 — exactly opposite).
 
-    user_ranks[i] — место читателя (1 — самое важное), scores[i] — оценка
-    модели (больше — важнее) для одного и того же поста.
+    user_ranks[i] — the reader's rank (1 — most important), scores[i] — the
+    model's score (higher — more important) for the same post.
 
-    Почему Kendall, а не Spearman: у нас 5 элементов и часть оценок модели
-    совпадает (шкала 1..5 на пяти постах — коллизии неизбежны). Kendall
-    считает пары постов и одинаково честно описывается словами ("из 10 пар
-    читатель и модель согласны в стольких-то"), а tau-b корректно
-    обрабатывает ничьи: пары с равной оценкой модели не считаются ни
-    согласием, ни разногласием, но уменьшают знаменатель, поэтому при ничьих
-    даже идеальное совпадение даёт меньше 1 — это осознанно: ничья в оценках
-    честно означает "модель различает посты хуже, чем читатель".
-    У читателя ничьих нет (места уникальны). None — метрика не определена:
-    меньше двух постов или у модели все оценки одинаковы (сравнивать нечего).
+    Why Kendall and not Spearman: we have 5 items and some of the model's
+    scores coincide (a 1..5 scale over five posts makes collisions
+    unavoidable). Kendall counts pairs of posts and can be described in
+    words just as faithfully ("the reader and the model agree on so-and-so
+    many out of 10 pairs"), and tau-b handles ties correctly: pairs with
+    equal model scores are counted as neither agreement nor disagreement,
+    but they shrink the denominator, so with ties even a perfect match
+    gives less than 1 — this is deliberate: a tie in scores honestly means
+    "the model distinguishes between posts worse than the reader does".
+    The reader has no ties (ranks are unique). None — the metric is
+    undefined: fewer than two posts, or the model gave all of them the same
+    score (nothing to compare).
     """
     n = len(user_ranks)
     if n < 2 or n != len(scores):
@@ -266,11 +276,11 @@ def agreement(user_ranks: list[int], scores: list[int]) -> float | None:
             if ds == 0:
                 model_ties += 1
                 continue
-            # Меньшее место читателя = важнее, поэтому знак разности мест
-            # переворачиваем: "i важнее j" — это rank_i < rank_j.
+            # A lower reader rank = more important, so the sign of the rank
+            # difference is flipped: "i more important than j" means rank_i < rank_j.
             du = user_ranks[j] - user_ranks[i]
             if du == 0:
-                continue  # ничьих у читателя быть не должно; защита от деления/знака
+                continue  # the reader shouldn't have ties; a safeguard against division/sign issues
             if (ds > 0) == (du > 0):
                 concordant += 1
             else:
@@ -283,43 +293,46 @@ def agreement(user_ranks: list[int], scores: list[int]) -> float | None:
 
 
 def model_ranks(scores: list[int]) -> list[int]:
-    """Места по оценке модели (1 — самая высокая), при равных оценках — одно
-    и то же место (стандартная "соревновательная" нумерация 1,2,2,4)."""
+    """Ranks by model score (1 — highest), equal scores get the same rank
+    (standard "competition" numbering 1,2,2,4)."""
     return [1 + sum(1 for other in scores if other > s) for s in scores]
 
 
 def load_item_texts(
     conn: sqlite3.Connection, survey_kind: str, run_id: int | None, keys: list[tuple[str, int]]
 ) -> dict[tuple[str, int], str]:
-    """Тексты постов опроса для показа читателю. Для постов номера — тот
-    текст, что напечатан (issue_posts, после сокращения нейронкой): читатель
-    оценивает то, что видел на бумаге, а не исходник, которого не видел.
-    Для остальных (выброшенные, онбординг) — исходный из posts."""
+    """Post texts for a survey, to show the reader. For issue posts — the
+    text as printed (issue_posts, after LLM shortening): the reader rates
+    what they saw on paper, not an original they never saw. For the rest
+    (dropped, onboarding) — the original from posts."""
     printed = load_issue_texts(conn, run_id) if survey_kind == "issue" and run_id else {}
     originals = load_post_texts(conn, [k for k in keys if k not in printed])
     return {k: printed.get(k, originals.get(k, "")) for k in keys}
 
 
-# Окно для показателя "учится ли газета": среднее совпадение последних N
-# опросов против предыдущих N. Пять — как размер опроса: достаточно, чтобы
-# сгладить шум одного ранжирования, и набирается за пару недель.
+# Window for the "is the newspaper learning" indicator: average agreement
+# of the last N surveys versus the previous N. Five, same as the survey
+# size: enough to smooth out the noise of a single ranking, and it builds
+# up over a couple of weeks.
 LEARNING_WINDOW = 5
 
 
 @dataclass(frozen=True)
 class LearningStats:
-    """Сводка для главной консоли: сколько опросов отправлено, среднее
-    совпадение (Kendall tau-b) последних LEARNING_WINDOW опросов и предыдущих
-    LEARNING_WINDOW (None — таких опросов нет или совпадение не определено)."""
+    """Summary for the main console: how many surveys were submitted, the
+    average agreement (Kendall tau-b) of the last LEARNING_WINDOW surveys
+    and the previous LEARNING_WINDOW (None — no such surveys, or agreement
+    is undefined)."""
     submitted: int
     recent_avg: float | None
     previous_avg: float | None
 
 
 def learning_stats(conn: sqlite3.Connection) -> LearningStats:
-    """Считает LearningStats по всем отправленным опросам (онбординг и после
-    номера), по порядку отправки. Опросы без agreement (метрика не определена:
-    у модели все оценки равны) считаются в submitted, но не в средних."""
+    """Computes LearningStats over all submitted surveys (onboarding and
+    post-issue), in submission order. Surveys without agreement (metric
+    undefined: the model gave all posts equal scores) are counted in
+    submitted, but not in the averages."""
     surveys = [
         s for kind in ("onboarding", "issue") for s in list_surveys(conn, kind) if s.submitted
     ]

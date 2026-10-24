@@ -1,22 +1,22 @@
-## Установка
+## Installation
 
-- **macOS** — скачайте `TG-Newspaper-<версия>-mac.dmg`, откройте и перетащите **TG Newspaper** в «Программы».
-- **Windows** — скачайте `TG-Newspaper-<версия>-windows-setup.exe` и запустите. Права администратора не нужны.
+- **macOS** — download `TG-Newspaper-<version>-mac.dmg`, open it and drag **TG Newspaper** into "Applications".
+- **Windows** — download `TG-Newspaper-<version>-windows-setup.exe` and run it. No admin rights needed.
 
-Первый запуск готовит окружение (Python, библиотеки, браузер для вёрстки) и занимает **2–3 минуты**; нужен интернет. Пока идёт подготовка, в браузере открыта страница ожидания, она сама перейдёт в консоль на `http://localhost:8420/`, где мастер настройки проведёт по всем шагам.
+First launch prepares the environment (Python, libraries, the browser used for layout) and takes **2–3 minutes**; requires internet. While it's preparing, a waiting page is shown in the browser, which then redirects on its own to the console at `http://localhost:8420/`, where the setup wizard walks you through every step.
 
-## Первое открытие (приложение без цифровой подписи)
+## First launch (the app isn't code-signed)
 
-- **macOS:** правый клик по приложению → «Открыть» → «Открыть». Либо попробуйте запустить как обычно, затем «Системные настройки» → «Конфиденциальность и безопасность» → «Всё равно открыть».
-- **Windows:** если SmartScreen показал «Windows защитила ваш компьютер» — нажмите «Подробнее» → «Выполнить в любом случае».
+- **macOS:** right-click the app → "Open" → "Open". Or try launching it normally, then go to "System Settings" → "Privacy & Security" → "Open Anyway".
+- **Windows:** if SmartScreen shows "Windows protected your PC" — click "More info" → "Run anyway".
 
-## Где лежат ваши данные
+## Where your data lives
 
 - macOS: `~/Library/Application Support/TG Newspaper`
 - Windows: `%LOCALAPPDATA%\TG Newspaper`
 
-Там настройки, сессия Telegram, база выпусков, логи и рабочее окружение. Обновление программы и её удаление эти данные не трогают; удалить их можно вручную.
+That's where settings, the Telegram session, the issue database, logs, and the runtime environment live. Updating or removing the app doesn't touch this data; you can delete it by hand if you want to.
 
-## Важно
+## Important
 
-Для Gemini из России нужен прокси (Cloudflare Worker) — как его настроить, описано в [README](https://github.com/tiltozavr2545/tg_newspaper#readme). Шрифты вёрстки «PT Serif»/«Superclarendon» есть в macOS; на Windows полоса свёрстается запасными (Georgia/Times), вид будет отличаться.
+Gemini requires a proxy (Cloudflare Worker) when used from Russia — see the [README](https://github.com/tiltozavr2545/tg_newspaper#readme) for how to set it up. The "PT Serif"/"Superclarendon" layout fonts are built into macOS; on Windows, the page falls back to substitutes (Georgia/Times), so the look will differ.

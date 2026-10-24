@@ -1,21 +1,21 @@
-// Cloudflare Worker: обратный прокси к Gemini API.
-// Скрипт ходит в Gemini через этот Worker (GEMINI_BASE_URL=https://<имя>.<аккаунт>.workers.dev),
-// а Worker пересылает запрос в Google со своего egress-IP (обычно в поддерживаемом регионе).
-// Так IP агента (РФ) не участвует — Google видит адрес Cloudflare.
+// Cloudflare Worker: reverse proxy to the Gemini API.
+// The script reaches Gemini through this Worker (GEMINI_BASE_URL=https://<name>.<account>.workers.dev),
+// and the Worker forwards the request to Google from its own egress IP (usually in a supported region).
+// This way the agent's IP (Russia) isn't involved — Google sees Cloudflare's address.
 //
-// Деплой: Cloudflare Dashboard → Workers & Pages → Create → Worker → вставить этот код → Deploy.
-// (Инструкция целиком — в README, раздел «Обход гео-блокировки через Cloudflare».)
+// Deploy: Cloudflare Dashboard → Workers & Pages → Create → Worker → paste this code → Deploy.
+// (Full instructions — in the README, "Bypassing the geo-block via Cloudflare" section.)
 
 const UPSTREAM = "https://generativelanguage.googleapis.com";
 
-// (необязательно) простой секрет-гейт, чтобы Worker не был открытым прокси.
-// Задай значение и добавь тот же секрет в заголовок x-proxy-secret на стороне клиента.
-// Пусто = гейт выключен.
+// (optional) a simple secret gate so the Worker isn't an open proxy.
+// Set a value and add the same secret in the x-proxy-secret header on the client side.
+// Empty = gate disabled.
 const PROXY_SECRET = "";
 
 export default {
   async fetch(request) {
-    // Разрешаем только пути Gemini API.
+    // Only allow Gemini API paths.
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/v1")) {
       return new Response("Not found", { status: 404 });
@@ -36,7 +36,7 @@ export default {
       body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
     });
 
-    // Стримим ответ обратно как есть.
+    // Stream the response back as-is.
     return new Response(upstreamResp.body, {
       status: upstreamResp.status,
       headers: upstreamResp.headers,

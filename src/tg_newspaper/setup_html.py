@@ -1,9 +1,9 @@
-"""Страница мастера первоначальной настройки (логика — в setup_wizard.py).
+"""The initial setup wizard page (logic lives in setup_wizard.py).
 
-Вёрстка — тем же подходом, что report_html.py/feedback_html.py: общий STYLE и
-небольшой EXTRA_STYLE, без внешних JS/CSS. Все значения экранируются;
-секреты сюда приходят уже маскированными (mask_secret) и в поля ввода не
-подставляются — пустое поле секрета означает "не менять".
+Markup follows the same approach as report_html.py/feedback_html.py: a
+shared STYLE plus a small EXTRA_STYLE, no external JS/CSS. Every value is
+escaped; secrets arrive here already masked (mask_secret) and are never
+filled into input fields — an empty secret field means "don't change it".
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ SETUP_STYLE = """
 
 @dataclass
 class SetupView:
-    """Всё, что нужно странице: статус шагов, что показать в полях и
-    результаты последних действий (flash — по ключу шага)."""
+    """Everything the page needs: step status, what to show in the fields,
+    and the results of the most recent actions (flash, keyed by step)."""
     steps: list[StepStatus]
     highlight: str | None = None
     api_id: str = ""
@@ -203,7 +203,7 @@ def _channels_card(view: SetupView) -> str:
 
 
 def _youtube_card(view: SetupView) -> str:
-    """Необязательный шаг: не входит в STEP_ORDER, на «готово»/следующий шаг не влияет."""
+    """An optional step: not part of STEP_ORDER, has no effect on "done"/the next step."""
     checks = ""
     if view.youtube_checks:
         items = "".join(

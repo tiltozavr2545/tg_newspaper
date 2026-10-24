@@ -1,4 +1,4 @@
-"""SQLite-хранилище сырых постов и результатов прогонов."""
+"""SQLite storage for raw posts and run results."""
 
 from __future__ import annotations
 
@@ -21,16 +21,18 @@ CREATE TABLE IF NOT EXISTS posts (
     PRIMARY KEY (channel, message_id)
 );
 
--- Результат одного прогона (кнопка "Собрать газету") — не сырые посты, а
--- решение по каждому посту окна: пошёл в газету или отсеян, на каком этапе,
--- почему. Заполняется по итогам прогона (pipeline.run_pipeline_for_last_24h), чтобы
--- консоль могла листать историю прогонов без повторных вызовов LLM.
+-- Result of a single run (the "Assemble newspaper" button) — not raw posts,
+-- but a decision for each post in the window: went into the newspaper or
+-- was filtered out, at which stage, why. Filled in from the run's results
+-- (pipeline.run_pipeline_for_last_24h) so the console can browse run
+-- history without calling the LLM again.
 --
--- period_start/period_end — границы окна сбора этого прогона (последние
--- LOOKBACK_HOURS часов от нажатия кнопки). Хранятся потому, что прогон
--- запускается вручную и в произвольный момент: без записанного окна потом
--- не понять, за какой период отбирались посты. NULL — прогон, сделанный до
--- перехода на запуск по кнопке, когда пайплайн гонялся по всей базе.
+-- period_start/period_end — the bounds of this run's collection window
+-- (the last LOOKBACK_HOURS hours as of the button press). Stored because
+-- the run is started manually at an arbitrary moment: without a recorded
+-- window there's no way to later tell which period the posts were
+-- collected for. NULL — a run made before switching to button-triggered
+-- runs, when the pipeline ran over the whole database.
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_started_at TEXT NOT NULL,
@@ -45,65 +47,66 @@ CREATE TABLE IF NOT EXISTS pipeline_outcomes (
     included INTEGER NOT NULL,
     stage TEXT NOT NULL,
     reason TEXT NOT NULL,
-    -- Оценка LLM, насколько посту помогло бы именно фото (не видео),
-    -- три степени (см. _CLASSIFICATION_INSTRUCTION в classifier.py):
-    -- 1 — не нужно, 2 — уместно, но смысл текста не теряется, 3 — без
-    -- фото теряется существенная часть смысла. 1 по умолчанию — как для
-    -- постов, не дошедших до LLM-классификации, так и для прогонов,
-    -- сделанных до появления этого поля.
+    -- LLM's assessment of how much a photo specifically (not video) would
+    -- help this post, three degrees (see _CLASSIFICATION_INSTRUCTION in
+    -- classifier.py): 1 — not needed, 2 — nice to have, but the text's
+    -- meaning isn't lost, 3 — a significant part of the meaning is lost
+    -- without a photo. Default 1 — both for posts that didn't reach LLM
+    -- classification and for runs made before this field existed.
     photo_relevance INTEGER NOT NULL DEFAULT 1,
-    -- Оценка значимости от LLM-классификатора (1-5, см. classifier.py) —
-    -- Этап 3: печатать в первую очередь важное, сокращать/выбрасывать
-    -- проходное, когда всё не помещается в фиксированный номер полос. 0 —
-    -- не определено (пост не дошёл до LLM-классификации либо прогон сделан
-    -- до появления этого поля).
+    -- Importance score from the LLM classifier (1-5, see classifier.py) —
+    -- Stage 3: print important items first, shorten/drop minor ones when
+    -- everything doesn't fit on the fixed-size issue. 0 — undetermined
+    -- (post didn't reach LLM classification, or the run predates this field).
     importance INTEGER NOT NULL DEFAULT 0,
-    -- Персональная оценка (Этап 6 п.4): насколько пост интересен именно
-    -- читателю (1-5), из того же вызова классификации. 0 — не запрашивалась
-    -- (пустой профиль, пост не дошёл до классификации, старый прогон).
+    -- Personal score (Stage 6 item 4): how interesting the post is to this
+    -- specific reader (1-5), from the same classification call. 0 — wasn't
+    -- requested (empty profile, post didn't reach classification, old run).
     personal_importance INTEGER NOT NULL DEFAULT 0,
-    -- Итоговая оценка = смесь importance и personal_importance с весом,
-    -- зависящим от числа отзывов (personalization.final_importance). По ней
-    -- отбирается номер и строятся опросы. 0 — старый прогон: тогда читатели
-    -- берут generic importance (pipeline.effective_importance).
+    -- Final score = a blend of importance and personal_importance weighted
+    -- by the number of ratings (personalization.final_importance). The issue
+    -- is assembled and surveys are built based on it. 0 — old run: then
+    -- readers fall back to the generic importance (pipeline.effective_importance).
     final_importance INTEGER NOT NULL DEFAULT 0,
-    -- Текст статьи, если он СИНТЕЗИРОВАН пайплайном, а не совпадает с сырым
-    -- постом из таблицы posts — сейчас единственный случай: LLM-склейка
-    -- нескольких постов одного канала в одну статью о развитии истории за
-    -- день (classifier.merge_story_batch, pipeline._merge_story_arcs).
-    -- Пустая строка (по умолчанию) — использовать текст как есть из posts;
-    -- без этого поля load_run восстанавливал бы для якоря склейки исходный
-    -- досклеечный текст, а не сводную статью, которую пайплайн реально
-    -- отобрал для печати.
+    -- Article text if it was SYNTHESIZED by the pipeline, rather than
+    -- matching the raw post from the posts table — currently the only such
+    -- case: LLM-based merging of several posts from one channel into a
+    -- single article about a story developing over the day
+    -- (classifier.merge_story_batch, pipeline._merge_story_arcs).
+    -- Empty string (default) — use the text as-is from posts; without this
+    -- field, load_run would restore the pre-merge original text for the
+    -- merge anchor, instead of the combined article the pipeline actually
+    -- selected for print.
     merged_text TEXT NOT NULL DEFAULT '',
-    -- Путь к скачанному фото поста (collector.py), если оно есть и относится
-    -- к статье, которую отобрали для печати — сам файл лежит вне БД
-    -- (Config.media_dir), тут только путь, чтобы layout.py мог найти его и
-    -- при повторном открытии сохранённого прогона без обращения к Telegram.
-    -- Пустая строка (по умолчанию) — фото нет или прогон сделан до появления
-    -- этого поля.
+    -- Path to the post's downloaded photo (collector.py), if any and if it
+    -- belongs to an article selected for print — the file itself lives
+    -- outside the DB (Config.media_dir), only the path is stored here, so
+    -- layout.py can find it when reopening a saved run without contacting
+    -- Telegram again.
+    -- Empty string (default) — no photo, or the run predates this field.
     photo_path TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (run_id, channel, message_id)
 );
 
--- Состав РЕАЛЬНО собранного номера: какие посты и с каким текстом ушли в
--- последний успешный рендер полос (pipeline.build_newspaper). Это не то же
--- самое, что pipeline_outcomes.included=1: included значит лишь "прошёл
--- отбор Этапа 2", а в номер фиксированного объёма часть таких постов не
--- влезает и выбрасывается, часть сокращается нейронкой. Дедупликация против
--- уже опубликованного (history_dedup) должна опираться именно на напечатанное,
--- иначе новость, не влезшая в номер, на следующий день блокировалась бы как
--- "уже была в газете".
+-- Composition of the ACTUALLY assembled issue: which posts, with what text,
+-- went into the last successful page render (pipeline.build_newspaper).
+-- This isn't the same as pipeline_outcomes.included=1: included only means
+-- "passed Stage 2 selection", while in a fixed-size issue some of those
+-- posts don't fit and are dropped, some are shortened by the LLM.
+-- Deduplication against what's already published (history_dedup) must rely
+-- on exactly what was printed, otherwise a news item that didn't fit in the
+-- issue would be blocked the next day as "already in the newspaper".
 --
--- text — напечатанный текст (после сокращения нейронкой, если сокращали), а
--- не исходный из posts: именно его читатель видел на бумаге, с ним и
--- сравниваем новых кандидатов.
+-- text — the printed text (after LLM shortening, if any), not the original
+-- from posts: this is what the reader actually saw on paper, and it's what
+-- new candidates are compared against.
 --
--- Номер по одному run_id можно собрать несколько раз (render_preview гоняют
--- повторно), поэтому повторная сборка ЗАМЕНЯЕТ состав номера этого прогона
--- (storage.save_issue), а не дописывает. Прогон без строк в этой таблице —
--- номер по нему не собирали, в историю дедупа он не входит. Номер, в который
--- не вошло ни одного поста, строк не оставляет и "собранным" не считается.
+-- An issue for a single run_id can be assembled several times
+-- (render_preview is run repeatedly), so a repeat assembly REPLACES this
+-- run's issue composition (storage.save_issue) rather than appending to it.
+-- A run with no rows in this table — no issue was assembled for it, it's
+-- not part of dedup history. An issue that ended up with no posts leaves no
+-- rows and isn't considered "assembled".
 CREATE TABLE IF NOT EXISTS issue_posts (
     run_id INTEGER NOT NULL REFERENCES pipeline_runs(run_id),
     channel TEXT NOT NULL,
@@ -112,20 +115,23 @@ CREATE TABLE IF NOT EXISTS issue_posts (
     assembled_at TEXT NOT NULL,
     PRIMARY KEY (run_id, channel, message_id)
 );
--- Профиль читателя (Этап 6 п.1). Читатель пока один, поэтому таблица хранит
--- ровно одну строку с id=1 (CHECK не даст завести вторую) — reader_id
--- сознательно не вводим, multi-user вне задач проекта; но и под конкретного
--- человека в коде ничего не зашито: интересы живут только здесь.
+-- Reader profile (Stage 6 item 1). There's only one reader for now, so the
+-- table holds exactly one row with id=1 (the CHECK prevents a second one)
+-- — reader_id is deliberately not introduced, multi-user is out of scope
+-- for this project; but nothing about a specific person is hardcoded in
+-- the code either: interests live only here.
 --
--- interests/disinterests — свободный текст из онбординга ("что интересно" /
--- "что неинтересно"), как есть: интерпретирует его LLM на этапе персональной
--- оценки (Этап 6 п.4), структурировать заранее нечем.
--- onboarded_at — когда онбординг пройден ИЛИ пропущен кнопкой "Пропустить"
--- (тогда тексты пустые): NULL значит "ещё не спрашивали" — консоль не даёт
--- запустить прогон, пока он NULL.
--- summary/summary_updated_at — краткий профиль, который LLM будет сводить из
--- текстов и накопленных отзывов (часть п.4). Сейчас только хранятся: пишет
--- их позже персональная оценка, читать их до этого некому.
+-- interests/disinterests — free-form text from onboarding ("what's
+-- interesting" / "what's not interesting"), as-is: the LLM interprets it
+-- during the personal scoring stage (Stage 6 item 4), there's nothing to
+-- structure ahead of time.
+-- onboarded_at — when onboarding was completed OR skipped via the "Skip"
+-- button (in which case the texts are empty): NULL means "hasn't been
+-- asked yet" — the console won't let a run start while it's NULL.
+-- summary/summary_updated_at — the short profile that the LLM will
+-- summarize from the texts and accumulated feedback (part of item 4).
+-- Currently only stored: personal scoring writes them later, there's no
+-- one to read them before that.
 CREATE TABLE IF NOT EXISTS reader_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     interests TEXT NOT NULL DEFAULT '',
@@ -135,20 +141,21 @@ CREATE TABLE IF NOT EXISTS reader_profile (
     summary_updated_at TEXT
 );
 
--- Опрос "расставь посты по важности" (Этап 6 п.2-3). Два вида:
---   'onboarding' — раунд ранжирования из онбординга; на одну анкету их три
---                  (три строки, run_id NULL), каждый раунд — отдельный опрос
---                  со своей метрикой совпадения;
---   'issue'      — опрос после собранного номера, run_id — прогон, чей номер
---                  оценивают (по одному на прогон, см. feedback.py).
--- Элементы опроса фиксируются в БД при создании (feedback_items), поэтому
--- повторное открытие страницы показывает те же посты в том же порядке, а не
--- пересэмплирует их.
--- submitted_at NULL — опрос создан, но не отправлен (читатель ушёл со
--- страницы): консоль считает его неотвеченным и покажет снова.
--- agreement — метрика совпадения порядка читателя с порядком модели (Kendall
--- tau-b, -1..1, см. feedback.agreement). NULL и у неотправленного опроса, и
--- когда метрика не определена (у модели у всех постов одинаковая оценка).
+-- Survey "rank the posts by importance" (Stage 6 items 2-3). Two kinds:
+--   'onboarding' — a ranking round from onboarding; there are three per
+--                  questionnaire (three rows, run_id NULL), each round is
+--                  a separate survey with its own agreement metric;
+--   'issue'      — a survey after an assembled issue, run_id is the run
+--                  whose issue is being rated (one per run, see feedback.py).
+-- Survey items are recorded in the DB when the survey is created
+-- (feedback_items), so reopening the page shows the same posts in the same
+-- order instead of resampling them.
+-- submitted_at NULL — the survey was created but not submitted (the reader
+-- left the page): the console treats it as unanswered and will show it again.
+-- agreement — the metric for how well the reader's order matches the
+-- model's order (Kendall tau-b, -1..1, see feedback.agreement). NULL both
+-- for an unsubmitted survey and when the metric is undefined (the model
+-- gave all posts the same score).
 CREATE TABLE IF NOT EXISTS feedback_surveys (
     survey_id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL CHECK (kind IN ('onboarding', 'issue')),
@@ -158,19 +165,21 @@ CREATE TABLE IF NOT EXISTS feedback_surveys (
     agreement REAL
 );
 
--- Посты опроса и ответ читателя на каждый.
--- in_issue — был ли пост в напечатанном номере (для онбординга всегда 0: там
--- номера нет). Нужен и для текста (в номере показываем напечатанный вариант,
--- не исходный), и как признак для части B: "выброшенный, но интересный" —
--- сильнее всего сигнал, что оценка модели ошибается.
--- model_score — оценка модели на МОМЕНТ опроса (feedback.model_score). Фиксируем
--- копией, а не ссылкой на pipeline_outcomes.importance: персональная оценка
--- позже изменится и пересчитается, а метрика и примеры для LLM должны
--- описывать то, что читатель реально сравнивал.
--- shown_position — порядок, в котором посты показаны на экране (случайный,
--- не по оценке: не подталкиваем читателя). user_rank — место, которое он
--- дал (1 — самое важное для него), NULL до отправки; внутри опроса места
--- уникальны (проверяется при приёме формы, не схемой).
+-- Survey posts and the reader's answer for each.
+-- in_issue — whether the post was in the printed issue (always 0 for
+-- onboarding: there's no issue there). Needed both for the text (in an
+-- issue we show the printed version, not the original) and as a signal
+-- for part B: "dropped but interesting" is the strongest signal that the
+-- model's score is wrong.
+-- model_score — the model's score AT THE TIME of the survey
+-- (feedback.model_score). We record a copy rather than a reference to
+-- pipeline_outcomes.importance: the personal score changes and is
+-- recalculated later, while the metric and examples for the LLM must
+-- describe what the reader actually compared.
+-- shown_position — the order the posts are shown on screen (random, not by
+-- score: we don't want to nudge the reader). user_rank — the rank they
+-- gave it (1 — most important to them), NULL until submitted; ranks are
+-- unique within a survey (checked on form submission, not by the schema).
 CREATE TABLE IF NOT EXISTS feedback_items (
     survey_id INTEGER NOT NULL REFERENCES feedback_surveys(survey_id),
     channel TEXT NOT NULL,
@@ -198,7 +207,7 @@ class Post:
 class Run:
     run_id: int
     started_at: datetime
-    # Окно сбора прогона; None у прогонов, сделанных до перехода на запуск по кнопке.
+    # The run's collection window; None for runs made before switching to button-triggered runs.
     period_start: datetime | None
     period_end: datetime | None
 
@@ -212,8 +221,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Досыпает колонки, появившиеся после первых прогонов, в уже созданную БД
-    (CREATE TABLE IF NOT EXISTS существующую таблицу не меняет)."""
+    """Adds columns that were introduced after the first runs to an already
+    created DB (CREATE TABLE IF NOT EXISTS doesn't change an existing table)."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(pipeline_runs)")}
     for column in ("period_start", "period_end"):
         if column not in columns:
@@ -223,7 +232,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "importance" not in outcome_columns:
         conn.execute("ALTER TABLE pipeline_outcomes ADD COLUMN importance INTEGER NOT NULL DEFAULT 0")
 
-    # Этап 6 п.4: у старых прогонов 0 — "неизвестно" (не выдумываем задним числом).
+    # Stage 6 item 4: for old runs, 0 means "unknown" (we don't backfill a guess).
     for column in ("personal_importance", "final_importance"):
         if column not in outcome_columns:
             conn.execute(
@@ -234,9 +243,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE pipeline_outcomes ADD COLUMN photo_relevance INTEGER NOT NULL DEFAULT 1"
         )
-        # Более старая колонка needs_photo (булева) — грубо переносим её в
-        # новую трёхстепенную шкалу, чтобы не терять уже собранные данные:
-        # needs_photo=1 раньше означало "без фото теряется смысл" (степень 3).
+        # The older needs_photo column (boolean) — roughly carry it over to
+        # the new three-degree scale so we don't lose already-collected
+        # data: needs_photo=1 used to mean "meaning is lost without a photo" (degree 3).
         if "needs_photo" in outcome_columns:
             conn.execute(
                 "UPDATE pipeline_outcomes SET photo_relevance = 3 WHERE needs_photo = 1"
@@ -252,8 +261,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE pipeline_outcomes ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''"
         )
 
-    # Этап 7: новые видео привязаны к прогону, чтобы пересборка номера брала
-    # те же видео без сети (как photo_path у постов).
+    # Stage 7: new videos are tied to a run, so rebuilding the issue reuses
+    # the same videos without network access (like photo_path for posts).
     conn.execute(
         """CREATE TABLE IF NOT EXISTS youtube_videos (
             run_id INTEGER NOT NULL,
@@ -271,7 +280,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def save_run_videos(conn: sqlite3.Connection, run_id: int, videos: list[YoutubeVideo]) -> None:
-    """Видео, собранные в этом прогоне (повторное сохранение перезаписывает)."""
+    """Videos collected in this run (saving again overwrites)."""
     conn.executemany(
         "INSERT OR REPLACE INTO youtube_videos (run_id, video_id, channel_id, channel_title, "
         "title, published_at, thumbnail_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -285,7 +294,7 @@ def save_run_videos(conn: sqlite3.Connection, run_id: int, videos: list[YoutubeV
 
 
 def load_run_videos(conn: sqlite3.Connection, run_id: int) -> list[YoutubeVideo]:
-    """Видео прогона, новые первыми."""
+    """A run's videos, newest first."""
     rows = conn.execute(
         "SELECT video_id, channel_id, channel_title, title, published_at, thumbnail_path "
         "FROM youtube_videos WHERE run_id = ? ORDER BY published_at DESC",
@@ -302,7 +311,7 @@ def load_posts(
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> list[Post]:
-    """Посты из окна (since, until]. Без границ — вся база (для отладки)."""
+    """Posts from the window (since, until]. With no bounds — the whole DB (for debugging)."""
     where, params = [], []
     if since is not None:
         where.append("posted_at > ?")
@@ -400,13 +409,14 @@ def load_outcomes(
 
 
 def save_issue(conn: sqlite3.Connection, run_id: int, posts: list[Post]) -> None:
-    """Записывает состав собранного номера прогона run_id (текст — тот, что
-    реально напечатан, см. issue_posts в SCHEMA). Повторная сборка по тому же
-    run_id заменяет прежний состав целиком: старые строки удаляются и вставляются
-    новые в одной транзакции, чтобы пост, выпавший при пересборке, не остался в
-    истории дедупа как "напечатанный". Пустой posts просто стирает состав."""
+    """Records the composition of run_id's assembled issue (text is what was
+    actually printed, see issue_posts in SCHEMA). Reassembling the same
+    run_id entirely replaces the previous composition: old rows are deleted
+    and new ones inserted in a single transaction, so a post dropped during
+    a rebuild doesn't stay in dedup history as "printed". An empty posts
+    list simply wipes the composition."""
     assembled_at = datetime.now(timezone.utc).isoformat()
-    with conn:  # одна транзакция: либо старый состав, либо новый, не смесь
+    with conn:  # one transaction: either the old composition or the new one, never a mix
         conn.execute("DELETE FROM issue_posts WHERE run_id = ?", (run_id,))
         conn.executemany(
             "INSERT INTO issue_posts (run_id, channel, message_id, text, assembled_at) "
@@ -416,15 +426,16 @@ def save_issue(conn: sqlite3.Connection, run_id: int, posts: list[Post]) -> None
 
 
 def load_recent_issue_posts(conn: sqlite3.Connection, limit_issues: int) -> list[Post]:
-    """Посты из последних limit_issues СОБРАННЫХ номеров (прогонов, у которых
-    есть запись в issue_posts) с напечатанным текстом — история для
-    дедупликации против уже опубликованного (Этап 2 п.4). Считаем номера, а не
-    прогоны и не дни: проект запускается по кнопке, и прогоны, по которым номер
-    так и не собирали, не должны вытеснять реально напечатанное из окна. "Последние"
-    — по run_id (порядок прогонов), повторная пересборка старого номера его
-    место в окне не меняет. Метаданные поста (posted_at, медиа) берутся из
-    posts, текст — из issue_posts. Если один пост попал в несколько номеров,
-    возвращается один раз — с текстом из самого свежего."""
+    """Posts from the last limit_issues ASSEMBLED issues (runs that have a
+    record in issue_posts) with the printed text — history for deduping
+    against what's already been published (Stage 2 item 4). We count issues,
+    not runs and not days: the project is run via a button, and runs for
+    which an issue was never assembled shouldn't push actually-printed
+    content out of the window. "Last" is by run_id (run order); rebuilding
+    an old issue again doesn't change its place in the window. Post
+    metadata (posted_at, media) comes from posts, text comes from
+    issue_posts. If one post ended up in several issues, it's returned
+    once — with the text from the most recent one."""
     rows = conn.execute(
         """
         SELECT i.channel, i.message_id, p.posted_at, i.text, p.has_media, p.media_type
@@ -479,16 +490,16 @@ def save_posts(conn: sqlite3.Connection, posts: list[Post]) -> None:
     conn.commit()
 
 
-# --- Этап 6: профиль читателя и отзывы -------------------------------------
+# --- Stage 6: reader profile and feedback -------------------------------------
 
 
 @dataclass(frozen=True)
 class ReaderProfile:
     interests: str = ""
     disinterests: str = ""
-    # None — онбординг ещё не пройден и не пропущен.
+    # None — onboarding hasn't been completed or skipped yet.
     onboarded_at: datetime | None = None
-    # Заполняются pipeline.refresh_profile_summary (Этап 6 п.4).
+    # Filled in by pipeline.refresh_profile_summary (Stage 6 item 4).
     summary: str | None = None
     summary_updated_at: datetime | None = None
 
@@ -523,9 +534,10 @@ class SurveyItem:
 
 @dataclass(frozen=True)
 class FeedbackExample:
-    """Один отправленный ответ читателя — пример для LLM в части B: что за
-    пост (исходный текст из posts), как его оценила модель и какое место дал
-    читатель среди остальных постов того же опроса (rank_of — их число)."""
+    """One submitted reader answer — an example for the LLM in part B: what
+    the post was (the original text from posts), how the model scored it,
+    and what rank the reader gave it among the other posts of the same
+    survey (rank_of is their count)."""
     survey_id: int
     kind: str
     run_id: int | None
@@ -547,7 +559,7 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 def load_profile(conn: sqlite3.Connection) -> ReaderProfile:
-    """Профиль читателя; если строки ещё нет — пустой, не онбордингованный."""
+    """The reader's profile; if the row doesn't exist yet — empty, not onboarded."""
     row = conn.execute(
         "SELECT interests, disinterests, onboarded_at, summary, summary_updated_at "
         "FROM reader_profile WHERE id = 1"
@@ -563,9 +575,9 @@ def load_profile(conn: sqlite3.Connection) -> ReaderProfile:
 def _write_profile(
     conn: sqlite3.Connection, interests: str, disinterests: str, onboarded: bool
 ) -> None:
-    # Без commit — вызывающий решает, в какой транзакции это происходит.
-    # summary НЕ трогаем: его пишет только персональная оценка, а повторное
-    # сохранение текстов не должно стирать накопленный краткий профиль.
+    # No commit — the caller decides which transaction this happens in.
+    # summary is NOT touched: only personal scoring writes it, and saving
+    # the texts again shouldn't wipe the accumulated short profile.
     conn.execute("INSERT OR IGNORE INTO reader_profile (id) VALUES (1)")
     conn.execute(
         "UPDATE reader_profile SET interests = ?, disinterests = ?, "
@@ -578,16 +590,16 @@ def _write_profile(
 def save_profile(
     conn: sqlite3.Connection, interests: str, disinterests: str, onboarded: bool = True
 ) -> None:
-    """Сохраняет тексты профиля. onboarded=True ставит onboarded_at (если ещё
-    не стоит — первая отметка не перезаписывается); пустые тексты + onboarded —
-    это и есть "Пропустить"."""
+    """Saves the profile's texts. onboarded=True sets onboarded_at (if it's
+    not already set — the first stamp isn't overwritten); empty texts +
+    onboarded is exactly what "Skip" does."""
     with conn:
         _write_profile(conn, interests, disinterests, onboarded)
 
 
 def save_profile_summary(conn: sqlite3.Connection, summary: str) -> None:
-    """Краткий профиль от LLM (Этап 6 п.4). Здесь только запись — вызывает
-    pipeline.refresh_profile_summary перед классификацией."""
+    """Short profile from the LLM (Stage 6 item 4). Only writing happens
+    here — called by pipeline.refresh_profile_summary before classification."""
     with conn:
         conn.execute("INSERT OR IGNORE INTO reader_profile (id) VALUES (1)")
         conn.execute(
@@ -602,8 +614,8 @@ def create_survey(
     run_id: int | None,
     items: list[tuple[str, int, bool, int, int]],
 ) -> int:
-    """Создаёт опрос и фиксирует его элементы. items: (channel, message_id,
-    in_issue, model_score, shown_position). Возвращает survey_id."""
+    """Creates a survey and records its items. items: (channel, message_id,
+    in_issue, model_score, shown_position). Returns survey_id."""
     with conn:
         cur = conn.execute(
             "INSERT INTO feedback_surveys (kind, run_id, created_at) VALUES (?, ?, ?)",
@@ -643,9 +655,9 @@ def list_surveys(
     run_id: int | None = None,
     only_pending: bool = False,
 ) -> list[Survey]:
-    """Опросы вида kind (для 'issue' — только указанного прогона, если run_id
-    задан) по возрастанию survey_id. only_pending — только неотправленные: так
-    консоль находит опрос, который ещё ждёт ответа."""
+    """Surveys of kind kind (for 'issue' — only the given run, if run_id is
+    passed) in ascending survey_id order. only_pending — unsubmitted only:
+    this is how the console finds a survey that's still awaiting an answer."""
     sql = f"SELECT {_SURVEY_COLUMNS} FROM feedback_surveys WHERE kind = ?"
     params: list = [kind]
     if run_id is not None:
@@ -658,7 +670,7 @@ def list_surveys(
 
 
 def load_survey_items(conn: sqlite3.Connection, survey_id: int) -> list[SurveyItem]:
-    """Элементы опроса в порядке показа (shown_position)."""
+    """A survey's items in display order (shown_position)."""
     rows = conn.execute(
         "SELECT channel, message_id, in_issue, model_score, shown_position, user_rank "
         "FROM feedback_items WHERE survey_id = ? ORDER BY shown_position",
@@ -673,7 +685,7 @@ def _write_answers(
     ranks: dict[tuple[str, int], int],
     agreement: float | None,
 ) -> None:
-    # Без commit — см. _write_profile.
+    # No commit — see _write_profile.
     conn.executemany(
         "UPDATE feedback_items SET user_rank = ? "
         "WHERE survey_id = ? AND channel = ? AND message_id = ?",
@@ -691,9 +703,10 @@ def save_survey_answers(
     ranks: dict[tuple[str, int], int],
     agreement: float | None,
 ) -> None:
-    """Записывает места читателя ((channel, message_id) -> 1..n) и метрику
-    совпадения, помечает опрос отправленным. Проверка уникальности мест — на
-    стороне приёма формы (feedback.validate_ranks), здесь только запись."""
+    """Records the reader's ranks ((channel, message_id) -> 1..n) and the
+    agreement metric, marks the survey as submitted. Checking that ranks are
+    unique happens on the form-submission side (feedback.validate_ranks),
+    only writing happens here."""
     with conn:
         _write_answers(conn, survey_id, ranks, agreement)
 
@@ -704,9 +717,10 @@ def complete_onboarding(
     disinterests: str,
     answers: list[tuple[int, dict[tuple[str, int], int], float | None]],
 ) -> None:
-    """Завершает онбординг одной транзакцией: тексты профиля + ответы на все
-    раунды (survey_id, ranks, agreement). Одной — чтобы обрыв посередине не
-    оставил "онбординг пройден", но без ответов на раунды (или наоборот)."""
+    """Completes onboarding in a single transaction: profile texts + answers
+    for all rounds (survey_id, ranks, agreement). A single one — so that a
+    failure midway doesn't leave "onboarding completed" without answers for
+    the rounds (or vice versa)."""
     with conn:
         _write_profile(conn, interests, disinterests, True)
         for survey_id, ranks, agreement in answers:
@@ -714,13 +728,13 @@ def complete_onboarding(
 
 
 def latest_issue_run_id(conn: sqlite3.Connection) -> int | None:
-    """Последний прогон, по которому записан собранный номер (issue_posts)."""
+    """The most recent run for which an assembled issue is recorded (issue_posts)."""
     row = conn.execute("SELECT MAX(run_id) FROM issue_posts").fetchone()
     return row[0]
 
 
 def load_issue_texts(conn: sqlite3.Connection, run_id: int) -> dict[tuple[str, int], str]:
-    """Напечатанные тексты номера прогона run_id: (channel, message_id) -> text."""
+    """The printed texts of run_id's issue: (channel, message_id) -> text."""
     rows = conn.execute(
         "SELECT channel, message_id, text FROM issue_posts WHERE run_id = ?", (run_id,)
     ).fetchall()
@@ -730,7 +744,7 @@ def load_issue_texts(conn: sqlite3.Connection, run_id: int) -> dict[tuple[str, i
 def load_post_texts(
     conn: sqlite3.Connection, keys: list[tuple[str, int]]
 ) -> dict[tuple[str, int], str]:
-    """Исходные тексты постов из posts по ключам (отсутствующие пропускаются)."""
+    """Original post texts from posts by key (missing ones are skipped)."""
     result: dict[tuple[str, int], str] = {}
     for ch, mid in keys:
         row = conn.execute(
@@ -742,8 +756,8 @@ def load_post_texts(
 
 
 def load_submitted_feedback(conn: sqlite3.Connection) -> list[FeedbackExample]:
-    """Все отправленные ответы читателя — примеры для персональной оценки
-    (часть B). Свежие опросы первыми; внутри опроса — по месту читателя."""
+    """All submitted reader answers — examples for personal scoring
+    (part B). Most recent surveys first; within a survey — by the reader's rank."""
     rows = conn.execute(
         """
         SELECT s.survey_id, s.kind, s.run_id, i.channel, i.message_id,

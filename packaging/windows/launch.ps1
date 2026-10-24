@@ -1,19 +1,19 @@
-﻿# Запуск консоли TG Newspaper на Windows (аналог scripts/launch.sh в релизном режиме).
-# Лежит в каталоге установки рядом с исходниками проекта (pyproject.toml, src\, scripts\);
-# данные пользователя, venv и логи — в %LOCALAPPDATA%\TG Newspaper, чтобы
-# переустановка/обновление программы их не трогали.
+﻿# Launches the TG Newspaper console on Windows (the counterpart of scripts/launch.sh in release mode).
+# Lives in the install directory next to the project sources (pyproject.toml, src\, scripts\);
+# user data, the venv and logs live in %LOCALAPPDATA%\TG Newspaper, so that
+# reinstalling/updating the program doesn't touch them.
 #
-# Переменные окружения (для проверки, в обычной работе не задаются):
-#   TG_NEWSPAPER_PORT     - порт консоли (по умолчанию 8420)
-#   TG_NEWSPAPER_NO_OPEN  - не открывать браузер
-#   TG_NEWSPAPER_HOME     - каталог данных пользователя (по умолчанию %LOCALAPPDATA%\TG Newspaper)
+# Environment variables (for testing; not set during normal use):
+#   TG_NEWSPAPER_PORT     - console port (default 8420)
+#   TG_NEWSPAPER_NO_OPEN  - don't open the browser
+#   TG_NEWSPAPER_HOME     - user data directory (default %LOCALAPPDATA%\TG Newspaper)
 
-# Continue, не Stop: в Windows PowerShell 5.1 при Stop любая строка stderr нативной
-# программы (uv, playwright пишут туда прогресс) превращается в исключение.
-# Ошибки проверяем явно по $LASTEXITCODE и try/catch.
+# Continue, not Stop: in Windows PowerShell 5.1, under Stop any stderr line from a native
+# program (uv and playwright write progress there) turns into an exception.
+# We check for errors explicitly via $LASTEXITCODE and try/catch.
 $ErrorActionPreference = 'Continue'
 
-# Без этого stdout процесса в файл идёт в cp1251, и кириллица/эмодзи в логах роняют консоль.
+# Without this, the process's stdout written to a file comes out as cp1251, and Cyrillic/emoji in logs crash the console.
 $env:PYTHONUTF8 = '1'
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -21,15 +21,15 @@ Add-Type -AssemblyName System.Windows.Forms
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Port = if ($env:TG_NEWSPAPER_PORT) { $env:TG_NEWSPAPER_PORT } else { '8420' }
 $Url = "http://localhost:$Port/"
-# Проверки доступности идут на 127.0.0.1, а не на localhost: на Windows localhost сначала
-# резолвится в ::1 (IPv6), а консоль слушает только IPv4. Запрос к закрытому IPv6-порту
-# ретраится около 2 с и не укладывается в -TimeoutSec, поэтому порт "не виден".
-# В браузер по-прежнему открываем $Url (localhost).
+# Availability checks go against 127.0.0.1, not localhost: on Windows, localhost first
+# resolves to ::1 (IPv6), while the console listens only on IPv4. A request to a closed IPv6 port
+# retries for about 2s and doesn't fit within -TimeoutSec, so the port "isn't seen".
+# We still open $Url (localhost) in the browser.
 $ProbeUrl = "http://127.0.0.1:$Port/"
 $HomeDir = if ($env:TG_NEWSPAPER_HOME) { $env:TG_NEWSPAPER_HOME } else { Join-Path $env:LOCALAPPDATA 'TG Newspaper' }
 $NoOpen = [bool]$env:TG_NEWSPAPER_NO_OPEN
 
-# Релизный режим включается так же, как в launch.sh: консоль и uv видят эти переменные.
+# Release mode is enabled the same way as in launch.sh: the console and uv see these variables.
 $env:TG_NEWSPAPER_HOME = $HomeDir
 $env:UV_PROJECT_ENVIRONMENT = Join-Path $HomeDir 'venv'
 $RunDir = Join-Path $HomeDir 'data'
@@ -43,7 +43,7 @@ $SetupLog = Join-Path $RunDir 'setup.log'
 New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 
 function Show-Error([string]$Message) {
-    # В тестах/CI окно некому закрыть - оно бы зависло навсегда, поэтому только stderr.
+    # In tests/CI there's no one to close the dialog - it would hang forever, so stderr only.
     if ($NoOpen -or $env:CI) { [Console]::Error.WriteLine($Message); return }
     [void][System.Windows.Forms.MessageBox]::Show($Message, 'TG Newspaper',
         [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
@@ -58,8 +58,8 @@ function Test-Up {
         Invoke-WebRequest -Uri $ProbeUrl -UseBasicParsing -TimeoutSec 2 -MaximumRedirection 0 -ErrorAction Stop | Out-Null
         return $true
     } catch {
-        # 303 на /setup на свежей установке PowerShell считает ошибкой, но это
-        # ответ сервера, то есть консоль жива; а вот "нет соединения" ответа не имеет.
+        # PowerShell treats a 303 on /setup on a fresh install as an error, but it's
+        # still a server response, meaning the console is alive; whereas "no connection" has no response.
         return ($null -ne $_.Exception.Response)
     }
 }
@@ -68,13 +68,13 @@ function Open-Url([string]$Target) {
     if ($NoOpen) { Write-Output "open $Target" } else { Start-Process $Target }
 }
 
-# Повторный клик по ярлыку: консоль уже работает - просто открываем вкладку.
+# Repeat click on the shortcut: the console is already running - just open a tab.
 if (Test-Up) {
     Open-Url $Url
     exit 0
 }
 
-# Ищем uv: PATH, обычное место установщика uv, наш собственный каталог.
+# Look for uv: PATH, the usual uv installer location, our own directory.
 function Find-Uv {
     $cmd = Get-Command uv -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -84,9 +84,9 @@ function Find-Uv {
     return $null
 }
 
-# Подготовка нужна, если нет окружения, сборка другая (BUILD_ID не совпал со
-# штампом в venv - например, после обновления; нет BUILD_ID - всегда) или нет
-# Chromium. Иначе стартуем сразу, без uv и сети.
+# Preparation is needed if there's no environment, the build differs (BUILD_ID doesn't match the
+# stamp in the venv - e.g. after an update; no BUILD_ID - always), or Chromium is
+# missing. Otherwise we start right away, without uv or the network.
 $BuildFile = Join-Path $Root 'BUILD_ID'
 $BuildId = if (Test-Path $BuildFile) { (Get-Content -Raw $BuildFile).Trim() } else { '' }
 $Stamp = Join-Path $env:UV_PROJECT_ENVIRONMENT '.tg-newspaper-build'
@@ -103,7 +103,7 @@ $PreparingOpened = $false
 if ($NeedPrepare -and -not $NoOpen) {
     $PrepPage = Join-Path $RunDir 'preparing.html'
     $tpl = Get-Content -Raw -Encoding UTF8 (Join-Path $Root 'scripts\preparing.html')
-    # UTF-8 без BOM явно: Set-Content в Windows PowerShell 5.1 пишет в ANSI и ломает кириллицу.
+    # UTF-8 without BOM explicitly: Set-Content in Windows PowerShell 5.1 writes ANSI and breaks Cyrillic.
     [System.IO.File]::WriteAllText($PrepPage, $tpl.Replace('__PORT__', $Port), (New-Object System.Text.UTF8Encoding($false)))
     Start-Process $PrepPage
     $PreparingOpened = $true
@@ -113,11 +113,11 @@ try {
     if ($NeedPrepare) {
         Set-Content -Path $SetupLog -Value '' -Encoding utf8
         $Uv = Find-Uv
-        # Только для проверки ветки установки uv.
+        # Only to test the uv-install code path.
         if ($env:TG_NEWSPAPER_FORCE_UV_INSTALL) { $Uv = $null }
         if (-not $Uv) {
-            Add-Content -Path $SetupLog -Value '== установка uv ==' -Encoding utf8
-            # Ставим uv в свой каталог, не трогая PATH пользователя.
+            Add-Content -Path $SetupLog -Value '== installing uv ==' -Encoding utf8
+            # Install uv into our own directory, without touching the user's PATH.
             $env:UV_INSTALL_DIR = Join-Path $HomeDir 'uv'
             $env:UV_NO_MODIFY_PATH = '1'
             try {
@@ -130,16 +130,16 @@ try {
         }
 
         Set-Location $Root
-        # --no-editable: путь к программе может меняться при обновлении; --reinstall-package:
-        # после обновления в venv должен оказаться новый код при той же версии пакета.
+        # --no-editable: the program's path can change on update; --reinstall-package:
+        # after an update, the venv must end up with the new code even at the same package version.
         Add-Content -Path $SetupLog -Value "== uv sync ($Uv) ==" -Encoding utf8
-        # Вывод в UTF-8 через ForEach-Object: строки stderr становятся текстом, а не ErrorRecord с "At line...".
+        # Output in UTF-8 via ForEach-Object: stderr lines become plain text rather than an ErrorRecord with "At line...".
         & $Uv sync --frozen --no-editable --reinstall-package tg-newspaper --quiet 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $SetupLog -Append -Encoding utf8
         $uvCode = $LASTEXITCODE
         if ($uvCode -ne 0) {
             throw "Не удалось установить зависимости (uv sync):`n`n$(Get-Tail $SetupLog)"
         }
-        # Идемпотентно: при уже установленном Chromium возвращается сразу.
+        # Idempotent: returns immediately if Chromium is already installed.
         Add-Content -Path $SetupLog -Value '== playwright install chromium ==' -Encoding utf8
         & $Py -m playwright install chromium 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $SetupLog -Append -Encoding utf8
         $pwCode = $LASTEXITCODE
@@ -148,22 +148,22 @@ try {
         }
         if ($BuildId) { Set-Content -Path $Stamp -Value $BuildId -Encoding ascii }
     } else {
-        'подготовка не нужна' | Out-File -FilePath $SetupLog -Encoding utf8
+        'preparation not needed' | Out-File -FilePath $SetupLog -Encoding utf8
     }
     Set-Location $Root
 
-    # Напрямую интерпретатором venv, не uv run: ничего не пере-синхронизируем.
+    # Directly via the venv interpreter, not uv run: we re-sync nothing.
     $proc = Start-Process -FilePath $Py `
         -ArgumentList @('scripts\console.py', '--no-browser', '--port', $Port) `
         -WorkingDirectory $Root -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $Log -RedirectStandardError $ErrLog
     Set-Content -Path $PidFile -Value $proc.Id
 
-    # Ждём готовности порта до 90 с (холодный первый старт на Windows: Defender сканирует
-    # свежие .pyc/.dll).
+    # Wait up to 90s for the port to come up (cold first start on Windows: Defender scans
+    # fresh .pyc/.dll files).
     for ($i = 0; $i -lt 180; $i++) {
         if (Test-Up) {
-            # Страница ожидания сама переходит на консоль - вторая вкладка не нужна.
+            # The waiting page navigates to the console itself - no second tab needed.
             if (-not $PreparingOpened) { Open-Url $Url }
             exit 0
         }
