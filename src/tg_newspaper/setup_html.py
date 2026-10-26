@@ -1,9 +1,10 @@
 """The initial setup wizard page (logic lives in setup_wizard.py).
 
-Markup follows the same approach as report_html.py/feedback_html.py: a
-shared STYLE plus a small EXTRA_STYLE, no external JS/CSS. Every value is
-escaped; secrets arrive here already masked (mask_secret) and are never
-filled into input fields — an empty secret field means "don't change it".
+Markup follows the same approach as report_html.py/feedback_html.py: the
+shared stylesheet and page wrapper live in console_theme, no external
+JS/CSS. Every value is escaped; secrets arrive here already masked
+(mask_secret) and are never filled into input fields — an empty secret
+field means "don't change it".
 """
 
 from __future__ import annotations
@@ -11,8 +12,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass, field
 
-from .feedback_html import EXTRA_STYLE
-from .report_html import STYLE
+from .console_theme import page
 from .setup_wizard import (
     STEP_CHANNELS,
     STEP_GEMINI,
@@ -22,22 +22,6 @@ from .setup_wizard import (
     StepResult,
     StepStatus,
 )
-
-SETUP_STYLE = """
-<style>
-  input[type=text], input[type=password], input[type=tel] {
-    width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d0d0d5;
-    border-radius: 6px; font: inherit; font-size: 13px; }
-  .card.current { border-color: #2657d6; box-shadow: 0 0 0 2px #dbe5fb; }
-  .card h2 .badge { margin-left: 8px; vertical-align: middle; }
-  .notice { border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13px;
-            white-space: pre-wrap; }
-  .notice.ok { background: #e3f6e5; border: 1px solid #b7e0bc; color: #1a5a26; }
-  .notice.err { background: #fbe8e8; border: 1px solid #f0b8b8; color: #7a1a1a; }
-  ul.checks { margin: 8px 0 0; padding-left: 20px; font-size: 13px; }
-  ul.checks li.ok { color: #1a5a26; } ul.checks li.err { color: #7a1a1a; }
-</style>
-"""
 
 
 @dataclass
@@ -68,8 +52,11 @@ def _e(value: str) -> str:
 def _notice(result: StepResult | None) -> str:
     if result is None:
         return ""
-    cls = "ok" if result.ok else "err"
-    return f'<div class="notice {cls}">{_e(result.message)}</div>'
+    if result.ok:
+        return f'<div class="notice ok"><span class="stamp ink">готово</span> {_e(result.message)}</div>'
+    first, _, rest = result.message.partition("\n")
+    tail = f"\n{_e(rest)}" if rest else ""
+    return f'<div class="notice err"><b>{_e(first)}</b>{tail}</div>'
 
 
 def _secret_hint(masked: str) -> str:
@@ -78,25 +65,33 @@ def _secret_hint(masked: str) -> str:
     return '<p class="hint">Пока не задан.</p>'
 
 
+def _panel(view: SetupView, key: str, number: int, title: str, stamp: str, detail: str, body: str) -> str:
+    current = " current" if view.highlight == key else ""
+    detail_html = f'<p class="hint">{_e(detail)}</p>' if detail else ""
+    return (
+        f'<section class="paper step{current}" id="step-{key}">'
+        f'<div class="step-head"><span class="step-num">{number}</span>'
+        f'<h2 class="step-title">{_e(title)}</h2></div>'
+        f'<div class="stamp-row">{stamp}</div>'
+        f"{detail_html}{_notice(view.flash.get(key))}{body}</section>"
+    )
+
+
 def _card(view: SetupView, key: str, number: int, body: str) -> str:
     status = next(s for s in view.steps if s.key == key)
-    badge = (
-        '<span class="badge in">готово</span>' if status.done else '<span class="badge out">не настроено</span>'
+    stamp = (
+        '<span class="stamp ink">готово</span>'
+        if status.done
+        else '<span class="stamp nonrepro">не настроено</span>'
     )
-    current = " current" if view.highlight == key else ""
-    return (
-        f'<div class="card{current}" id="step-{key}">'
-        f"<h2>{number}. {_e(STEP_TITLES[key])}{badge}</h2>"
-        f'<p class="hint">{_e(status.detail)}</p>'
-        f"{_notice(view.flash.get(key))}{body}</div>"
-    )
+    return _panel(view, key, number, STEP_TITLES[key], stamp, status.detail, body)
 
 
 def _telegram_card(view: SetupView) -> str:
     body = f"""
 <form method="post" action="/setup/telegram">
   <p class="hint">Получить на <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a>
-  → «API development tools». Заходите под <strong>отдельным аккаунтом проекта</strong>, не личным:
+  в разделе «API development tools». Заходите под <strong>отдельным аккаунтом проекта</strong>, не личным:
   сессия Telethon — это ключ к аккаунту (см. AGENTS.md). Бот-токен не нужен — сбор идёт под пользовательским аккаунтом.</p>
   <label class="field" for="api_id">api_id (целое число)</label>
   <input type="text" id="api_id" name="api_id" value="{_e(view.api_id)}" inputmode="numeric" autocomplete="off">
@@ -106,7 +101,7 @@ def _telegram_card(view: SetupView) -> str:
   <label class="field" for="session_name">Имя файла сессии</label>
   <input type="text" id="session_name" name="session_name" value="{_e(view.session_name)}" autocomplete="off">
   <p class="hint">Буквы, цифры, «_», «-», «.»; по умолчанию tg_newspaper.</p>
-  <div class="actions"><button class="submit" type="submit">Сохранить</button></div>
+  <div class="actions"><button class="btn" type="submit">Сохранить</button></div>
 </form>"""
     return _card(view, STEP_TELEGRAM, 1, body)
 
@@ -117,16 +112,16 @@ def _login_card(view: SetupView) -> str:
 <form method="post" action="/setup/login/phone">
   <label class="field" for="phone">Номер телефона аккаунта проекта</label>
   <input type="tel" id="phone" name="phone" placeholder="+79991234567" autocomplete="off">
-  <div class="actions" style="margin-top:10px"><button class="submit" type="submit">Отправить код</button></div>
+  <div class="actions"><button class="btn" type="submit">Отправить код</button></div>
 </form>"""
     if view.login_stage == "code":
         body = """
 <form method="post" action="/setup/login/code">
   <label class="field" for="code">Код из Telegram</label>
   <input type="text" id="code" name="code" inputmode="numeric" autocomplete="off">
-  <div class="actions" style="margin-top:10px">
-    <button class="submit" type="submit">Войти</button>
-    <button class="secondary" type="submit" formaction="/setup/login/cancel" formnovalidate>Начать заново</button>
+  <div class="actions">
+    <button class="btn" type="submit">Войти</button>
+    <button class="btn quiet" type="submit" formaction="/setup/login/cancel" formnovalidate>Начать заново</button>
   </div>
 </form>"""
     elif view.login_stage == "password":
@@ -134,14 +129,14 @@ def _login_card(view: SetupView) -> str:
 <form method="post" action="/setup/login/password">
   <label class="field" for="password">Пароль двухфакторной защиты</label>
   <input type="password" id="password" name="password" autocomplete="off">
-  <div class="actions" style="margin-top:10px">
-    <button class="submit" type="submit">Войти</button>
-    <button class="secondary" type="submit" formaction="/setup/login/cancel" formnovalidate>Начать заново</button>
+  <div class="actions">
+    <button class="btn" type="submit">Войти</button>
+    <button class="btn quiet" type="submit" formaction="/setup/login/cancel" formnovalidate>Начать заново</button>
   </div>
 </form>"""
     elif status.done and view.login_who:
         body = f"""
-<p><strong>Вход выполнен: {_e(view.login_who)}</strong></p>
+<p class="who">Вход выполнен: {_e(view.login_who)}</p>
 <details><summary>Войти заново (другим аккаунтом)</summary>{phone_form}</details>"""
     elif status.done:
         body = f"<details open><summary>Войти заново</summary>{phone_form}</details>"
@@ -172,8 +167,8 @@ def _gemini_card(view: SetupView) -> str:
   обход гео-блокировки через Cloudflare» («Обход гео-блокировки»). Только https://, слэш в конце срезается.
   Кнопка «Сохранить и проверить» ходит именно через этот прокси.</p>
   <div class="actions">
-    <button class="submit" type="submit" name="action" value="save">Сохранить</button>
-    <button class="secondary" type="submit" name="action" value="check">Сохранить и проверить</button>
+    <button class="btn" type="submit" name="action" value="save">Сохранить</button>
+    <button class="btn secondary" type="submit" name="action" value="check">Сохранить и проверить</button>
   </div>
 </form>"""
     return _card(view, STEP_GEMINI, 3, body)
@@ -183,7 +178,7 @@ def _channels_card(view: SetupView) -> str:
     checks = ""
     if view.channel_checks:
         items = "".join(
-            f'<li class="{"ok" if r.ok else "err"}">@{_e(ch)} — {_e(r.message)}</li>'
+            f'<li class="{"ok" if r.ok else "err"}">{"✓" if r.ok else "✕"} @{_e(ch)} — {_e(r.message)}</li>'
             for ch, r in view.channel_checks
         )
         checks = f'<ul class="checks">{items}</ul>'
@@ -195,8 +190,8 @@ def _channels_card(view: SetupView) -> str:
   Строка, начинающаяся с «#», — название рубрики (секции газеты): каналы под ней относятся к ней, например
   «# Новости». Каналы до первого заголовка — без рубрики. Список пишется в config/channels.yaml.</p>
   <div class="actions">
-    <button class="submit" type="submit" name="action" value="save">Сохранить</button>
-    <button class="secondary" type="submit" name="action" value="check">Сохранить и проверить доступ</button>
+    <button class="btn" type="submit" name="action" value="save">Сохранить</button>
+    <button class="btn secondary" type="submit" name="action" value="check">Сохранить и проверить доступ</button>
   </div>
 </form>{checks}"""
     return _card(view, STEP_CHANNELS, 4, body)
@@ -207,61 +202,70 @@ def _youtube_card(view: SetupView) -> str:
     checks = ""
     if view.youtube_checks:
         items = "".join(
-            f'<li class="{"ok" if r.ok else "err"}">{_e(src)} — {_e(r.message)}</li>'
+            f'<li class="{"ok" if r.ok else "err"}">{"✓" if r.ok else "✕"} {_e(src)} — {_e(r.message)}</li>'
             for src, r in view.youtube_checks
         )
         checks = f'<ul class="checks">{items}</ul>'
     body = f"""
 <form method="post" action="/setup/youtube">
   <label class="field" for="youtube">YouTube-каналы, по одному на строку</label>
-  <textarea id="youtube" name="youtube" rows="5" placeholder="@GoogleDevelopers&#10;https://www.youtube.com/@handle&#10;https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw">{_e(view.youtube_text)}</textarea>
+  <textarea id="youtube" name="youtube" class="short" rows="5" placeholder="@GoogleDevelopers&#10;https://www.youtube.com/@handle&#10;https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw">{_e(view.youtube_text)}</textarea>
   <p class="hint">Принимаются @handle, ссылки youtube.com (@handle, /channel/UC…, /c/…, /user/…) и голый id UC….
   При сохранении каналы проверяются по сети. Новые видео за сутки попадают в блок «Новые видео» в конце номера.
   Шаг необязателен: пустой список — без видео.</p>
-  <div class="actions"><button class="submit" type="submit">Сохранить</button></div>
+  <div class="actions"><button class="btn" type="submit">Сохранить</button></div>
 </form>{checks}"""
-    return (
-        '<div class="card" id="step-youtube">'
-        '<h2>5. YouTube-каналы<span class="badge out">необязательно</span></h2>'
-        f"{_notice(view.flash.get('youtube'))}{body}</div>"
+    stamp = '<span class="stamp nonrepro">необязательно</span>'
+    return _panel(view, "youtube", 5, "YouTube-каналы", stamp, "", body)
+
+
+def _rail_html(view: SetupView, next_key: str | None) -> str:
+    """The step list on the left: number, title, status word; the next
+    not-done step is highlighted with the marker."""
+    items = []
+    for n, st in enumerate(view.steps, start=1):
+        word = '<span class="meta done">готово</span>' if st.done else '<span class="meta">не настроено</span>'
+        nxt = " next" if st.key == next_key else ""
+        items.append(
+            f'<li class="{nxt.strip()}"><a href="#step-{st.key}"><span class="rail-label">'
+            f'<span class="rail-n">{n}</span><span class="rail-title">{_e(STEP_TITLES[st.key])}</span></span>{word}</a></li>'
+        )
+    items.append(
+        '<li><a href="#step-youtube"><span class="rail-label"><span class="rail-n">5</span>'
+        '<span class="rail-title">YouTube</span></span><span class="meta">необязательно</span></a></li>'
     )
+    return f'<nav class="rail" aria-label="Шаги настройки"><ol>{"".join(items)}</ol></nav>'
 
 
 def render_setup_page(view: SetupView) -> str:
     all_done = all(s.done for s in view.steps)
+    next_key = None
     if all_done:
-        footer = (
-            '<div class="banner info"><strong>Всё настроено.</strong> Следующий шаг — короткий онбординг '
-            'по интересам, он подбирает газету под вас. <a href="/onboarding">Перейти к онбордингу →</a> '
-            '· <a href="/">На главную</a></div>'
+        banner = (
+            '<div class="attn"><strong>Всё настроено.</strong> Следующий шаг — короткий онбординг '
+            'по интересам, он подбирает газету под вас. <a href="/onboarding">Перейти к онбордингу</a>. '
+            '<a href="/">На главную</a></div>'
         )
-        intro = ""
     else:
         nxt = next(s for s in view.steps if not s.done)
-        intro = (
-            f'<div class="banner"><strong>Проект ещё не настроен.</strong> Следующий шаг — '
+        next_key = nxt.key
+        banner = (
+            f'<div class="attn"><strong>Проект ещё не настроен.</strong> Следующий шаг — '
             f'<a href="#step-{nxt.key}">{_e(STEP_TITLES[nxt.key])}</a>: {_e(nxt.detail)}.</div>'
         )
-        footer = ""
     cards = "\n".join(
         (_telegram_card(view), _login_card(view), _gemini_card(view), _channels_card(view), _youtube_card(view))
     )
-    return f"""<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>TG Newspaper — настройка</title>
-{STYLE}
-{EXTRA_STYLE}
-{SETUP_STYLE}
-</head>
-<body>
-  <h1>Настройка TG Newspaper</h1>
-  <p class="subtitle">Любой шаг можно пройти заново. Секреты хранятся локально в .env и в файле сессии
+    body = f"""
+  <h1>Настройка</h1>
+  <p class="lede">Любой шаг можно пройти заново. Секреты хранятся локально в .env и в файле сессии
   (права 0600), на странице показываются только в маске.</p>
-  {intro}
-  {cards}
-  {footer}
-  <p><a href="/">← на главную</a></p>
-</body>
-</html>"""
+  {banner}
+  <div class="setup-grid">
+    {_rail_html(view, next_key)}
+    <div class="steps">
+    {cards}
+    </div>
+  </div>
+"""
+    return page("настройка", body, active="setup")

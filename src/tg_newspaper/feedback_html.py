@@ -1,10 +1,10 @@
 """Console pages for Stage 6: reader onboarding, the post-issue survey, and
 the page comparing the reader's ranking against the model's.
 
-Markup follows the same approach as report_html.py (a shared STYLE plus a
-small addition below, no external CSS/JS). Pure "data -> HTML" functions:
-they never read from the DB and know nothing about HTTP, so pages can be
-viewed and tested independently of the console.
+Markup follows the same approach as report_html.py (the shared stylesheet
+and page wrapper live in console_theme, no external CSS/JS). Pure
+"data -> HTML" functions: they never read from the DB and know nothing about
+HTTP, so pages can be viewed and tested independently of the console.
 
 Ranking uses plain <select> dropdowns numbered 1..n, not drag-and-drop: no
 JS dependencies, and it works the same everywhere; the server checks that
@@ -17,37 +17,10 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 
+from .console_theme import page, section_head
 from .feedback import model_ranks
-from .report_html import STYLE, _text_html
+from .report_html import _text_html
 from .storage import Survey, SurveyItem
-
-EXTRA_STYLE = """
-<style>
-  .card { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
-          padding: 14px 18px; margin-bottom: 14px; }
-  .card h2 { font-size: 15px; margin: 0 0 10px; }
-  textarea { width: 100%; box-sizing: border-box; min-height: 90px; padding: 8px 10px;
-             border: 1px solid #d0d0d5; border-radius: 6px; font: inherit; font-size: 13px; }
-  label.field { display: block; font-weight: 600; font-size: 13px; margin: 10px 0 4px; }
-  .hint { color: #666; font-size: 12px; margin: 0 0 8px; }
-  .rank-item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0;
-               border-top: 1px solid #eee; }
-  .rank-item:first-of-type { border-top: none; }
-  .rank-item select { font-size: 15px; padding: 4px 6px; }
-  .rank-item .body { flex: 1; font-size: 13px; }
-  .rank-item.bad select { border-color: #b02a2a; }
-  .submit { border: none; border-radius: 8px; background: #1a7a2e; color: #fff;
-            padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; }
-  .secondary { border: 1px solid #d0d0d5; border-radius: 8px; background: #fff;
-               color: #333; padding: 10px 20px; font-size: 14px; cursor: pointer; }
-  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .score { font-size: 20px; font-weight: 700; }
-  .badge.printed { background: #e3f6e5; color: #1a7a2e; }
-  .badge.dropped { background: #fbe8e8; color: #b02a2a; }
-  .badge.same { background: #e3f6e5; color: #1a7a2e; }
-  .badge.diff { background: #fff3d6; color: #8a5a00; }
-</style>
-"""
 
 
 @dataclass(frozen=True)
@@ -63,21 +36,6 @@ def rank_field_name(survey_id: int, item: SurveyItem) -> str:
     position): the position is unique within a survey, and the channel/id
     would be unnecessary and inconvenient in a field name."""
     return f"rank_{survey_id}_{item.shown_position}"
-
-
-def _page(title: str, body: str) -> str:
-    return f"""<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>TG Newspaper — {html.escape(title)}</title>
-{STYLE}
-{EXTRA_STYLE}
-</head>
-<body>
-{body}
-</body>
-</html>"""
 
 
 def _ranking_block_html(
@@ -106,15 +64,17 @@ def _ranking_block_html(
         bad = " bad" if show_errors and (not chosen or own_values.count(chosen) > 1) else ""
         rows.append(
             f'<div class="rank-item{bad}">'
-            f'<select name="{name}">{"".join(options)}</select>'
-            f'<div class="body"><span class="chan">{html.escape(view.item.channel)}/'
-            f'{view.item.message_id}</span><br>{_text_html(view.text)}</div></div>'
+            f'<select name="{name}" aria-label="Место поста">{"".join(options)}</select>'
+            f'<div class="clip-text"><span class="meta">{html.escape(view.item.channel)}/'
+            f"{view.item.message_id}</span>{_text_html(view.text)}</div></div>"
         )
     return "\n".join(rows)
 
 
 def _error_html(error: str | None) -> str:
-    return f'<div class="error-box">{html.escape(error)}</div>' if error else ""
+    if not error:
+        return ""
+    return f'<div class="notice err"><b>{html.escape(error)}</b></div>'
 
 
 def render_onboarding_page(
@@ -132,43 +92,45 @@ def render_onboarding_page(
     selected = selected or {}
     if rounds:
         rounds_html = "".join(
-            f"""<div class="card">
-        <h2>Раунд {i} из {len(rounds)}: расставьте посты по важности для вас</h2>
-        <p class="hint">1 — самое важное для вас, {len(views)} — наименее важное.
+            f"""<section class="round">
+        {section_head(f"Раунд {i} из {len(rounds)}")}
+        <p class="hint">Расставьте посты по важности для вас: 1 — самое важное, {len(views)} — наименее важное.
         Каждое место — один раз.</p>
+        <div class="paper clippings">
         {_ranking_block_html(survey_id, views, selected, bool(error))}
-      </div>"""
+        </div>
+      </section>"""
             for i, (survey_id, views) in enumerate(rounds, start=1)
         )
     else:
         rounds_html = (
-            '<div class="banner info">В базе пока нет классифицированных постов, поэтому '
+            '<div class="attn">В базе пока нет классифицированных постов, поэтому '
             "раунды ранжирования пропущены — сохранится только текст выше. "
             "Они появятся после первого прогона (но онбординг при этом уже будет пройден).</div>"
         )
-    return _page(
+    return page(
         "онбординг",
         f"""
   <h1>Сначала расскажите о себе</h1>
-  <p class="subtitle">Это нужно, чтобы газета училась отбирать новости под вас, а не для
+  <p class="lede">Это нужно, чтобы газета училась отбирать новости под вас, а не для
   широкой аудитории. Займёт пару минут, пройти можно один раз.</p>
   {_error_html(error)}
   <form method="post" action="/onboarding">
-    <div class="card">
+    <div class="paper panel">
       <h2>О чём вам интересно читать?</h2>
       <label class="field" for="interests">Что интересно</label>
-      <textarea id="interests" name="interests">{html.escape(interests)}</textarea>
+      <textarea id="interests" name="interests" class="short">{html.escape(interests)}</textarea>
       <label class="field" for="disinterests">Что неинтересно</label>
-      <textarea id="disinterests" name="disinterests">{html.escape(disinterests)}</textarea>
+      <textarea id="disinterests" name="disinterests" class="short">{html.escape(disinterests)}</textarea>
       <p class="hint">Свободным текстом: темы, каналы, форматы.</p>
     </div>
     {rounds_html}
     <div class="actions">
-      <button class="submit" type="submit">Сохранить</button>
+      <button class="btn" type="submit">Сохранить</button>
     </div>
   </form>
   <form method="post" action="/onboarding/skip" style="margin-top:12px">
-    <button class="secondary" type="submit">Пропустить (можно позже не возвращаться)</button>
+    <button class="btn quiet" type="submit">Пропустить (можно позже не возвращаться)</button>
   </form>
 """,
     )
@@ -181,36 +143,30 @@ def render_survey_page(
     error: str | None = None,
 ) -> str:
     n = len(views)
-    return _page(
+    return page(
         "оцените номер",
         f"""
   <h1>Оцените прошлый номер</h1>
-  <p class="subtitle">Расставьте посты по порядку: 1 — самое важное для вас, {n} — наименее
+  <p class="lede">Расставьте посты по порядку: 1 — самое важное для вас, {n} — наименее
   важное. Каждое место — один раз. Часть постов была в номере, часть нет — не гадайте
   какие, оценивайте сами новости.</p>
   {_error_html(error)}
   <form method="post" action="/survey/{survey.survey_id}">
-    <div class="card">
+    <div class="paper clippings round">
       {_ranking_block_html(survey.survey_id, views, selected or {}, bool(error))}
     </div>
     <div class="actions">
-      <button class="submit" type="submit">Отправить</button>
-      <a href="/">← на главную</a>
+      <button class="btn" type="submit">Отправить</button>
+      <a href="/">На главную</a>
     </div>
   </form>
 """,
     )
 
 
-def _format_agreement(value: float | None) -> str:
-    if value is None:
-        return "не определено (у модели у всех постов одинаковая оценка)"
-    return f"{value:+.2f}"
-
-
 def _verdict(value: float | None) -> str:
     if value is None:
-        return ""
+        return "Совпадение не определено: у модели у всех постов одинаковая оценка."
     if value >= 0.6:
         return "Ваш порядок в целом совпал с порядком модели."
     if value <= -0.6:
@@ -234,50 +190,55 @@ def render_result_page(survey: Survey, views: list[ItemView]) -> str:
         same = "same" if it.user_rank == mplace and not tie else "diff"
         if survey.kind == "issue":
             status = (
-                '<span class="badge printed">в номере</span>'
+                '<span class="stamp ink">в номере</span>'
                 if it.in_issue
-                else '<span class="badge dropped">не влез в номер</span>'
+                else '<span class="stamp nonrepro">не влез в номер</span>'
             )
         else:
             status = ""
         rows.append(
             f"""<tr>
-      <td><span class="score">{it.user_rank}</span></td>
-      <td><span class="badge {same}">{mplace_label}</span></td>
+      <td><span class="place">{it.user_rank}</span></td>
+      <td><span class="mplace {same}">{mplace_label}</span></td>
       <td>{it.model_score}</td>
       <td>{status}</td>
-      <td class="text-cell"><span class="chan">{html.escape(it.channel)}/{it.message_id}</span><br>{_text_html(view.text)}</td>
+      <td><div class="clip-text"><span class="meta">{html.escape(it.channel)}/{it.message_id}</span>{_text_html(view.text)}</div></td>
     </tr>"""
         )
     status_head = "<th>Номер</th>" if survey.kind == "issue" else "<th></th>"
-    return _page(
+    figure = "—" if survey.agreement is None else f"{survey.agreement:+.2f}".replace("-", "\u2212")
+    return page(
         "сравнение",
         f"""
   <h1>Спасибо! Вот как это выглядит</h1>
-  <p class="subtitle">Ваш порядок против порядка, в котором эти посты расставила модель
+  <p class="lede">Ваш порядок против порядка, в котором эти посты расставила модель
   (по её оценке значимости 1-5; равные оценки дают одно общее место, помечено «=»).</p>
-  <div class="summary">
-    <div class="stat"><span class="n">{_format_agreement(survey.agreement)}</span>
-      <span class="label">совпадение порядка (Kendall tau-b, от -1 до +1)</span></div>
+  <div class="agree">
+    <div class="agree-fig">{figure}</div>
+    <div>
+      <p class="verdict">{_verdict(survey.agreement)}</p>
+      <div class="meta">совпадение порядка, Kendall tau-b, от −1 до +1</div>
+    </div>
   </div>
-  <p>{_verdict(survey.agreement)}</p>
-  <table>
+  <div class="paper table-wrap">
+  <table class="cmp">
     <thead><tr><th>Ваше место</th><th>Место модели</th><th>Оценка модели</th>{status_head}<th>Пост</th></tr></thead>
     <tbody>
       {"".join(rows)}
     </tbody>
   </table>
-  <p><a href="/">← на главную</a></p>
+  </div>
+  <p class="back"><a href="/">На главную</a></p>
 """,
     )
 
 
 def render_message_page(title: str, message: str) -> str:
-    return _page(
+    return page(
         title,
         f"""
   <h1>{html.escape(title)}</h1>
   <p>{html.escape(message)}</p>
-  <p><a href="/">← на главную</a></p>
+  <p><a href="/">На главную</a></p>
 """,
     )

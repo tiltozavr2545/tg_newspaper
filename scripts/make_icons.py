@@ -19,14 +19,31 @@ from playwright.sync_api import sync_playwright
 OUT = Path(__file__).resolve().parent.parent / "packaging" / "icons"
 ICO_SIZES = (16, 32, 48, 64, 128, 256)
 
+# The console's paste-up-desk look: a board with a non-photo-blue grid, a
+# printable sheet with crop marks, the masthead plate with the "T" monogram
+# the paper prints on every tile, and one line under a yellow marker.
 HTML = """<html><body style="margin:0;background:transparent">
-<div style="width:824px;height:824px;margin:100px;border-radius:185px;background:#f3ecd9;
- box-shadow:0 12px 30px rgba(0,0,0,.35);border:14px solid #1a1a1a;box-sizing:border-box;
- display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Georgia,'Times New Roman',serif;color:#1a1a1a">
- <div style="font-size:300px;font-weight:bold;line-height:1">TG</div>
- <div style="width:560px;height:16px;background:#1a1a1a;margin:24px 0 18px"></div>
- <div style="width:560px;height:6px;background:#1a1a1a;margin-bottom:16px"></div>
- <div style="font-size:92px;letter-spacing:6px;font-weight:bold">NEWSPAPER</div>
+<div style="position:relative;width:824px;height:824px;margin:100px;border-radius:185px;overflow:hidden;
+ box-shadow:0 12px 30px rgba(0,0,0,.35);background-color:#F2F7F9;
+ background-image:linear-gradient(#CFE6EE 4px,transparent 4px),linear-gradient(90deg,#CFE6EE 4px,transparent 4px);
+ background-size:82px 82px;background-position:-2px -2px">
+ <div style="position:absolute;left:182px;top:142px;width:460px;height:540px">
+  <div style="position:absolute;inset:0;background:#fff;border:4px solid #8FCDE3;box-sizing:border-box"></div>
+  <i style="position:absolute;left:-70px;top:-2px;width:50px;height:5px;background:#231F20"></i>
+  <i style="position:absolute;left:-2px;top:-70px;width:5px;height:50px;background:#231F20"></i>
+  <i style="position:absolute;right:-70px;top:-2px;width:50px;height:5px;background:#231F20"></i>
+  <i style="position:absolute;right:-2px;top:-70px;width:5px;height:50px;background:#231F20"></i>
+  <i style="position:absolute;left:-70px;bottom:-2px;width:50px;height:5px;background:#231F20"></i>
+  <i style="position:absolute;left:-2px;bottom:-70px;width:5px;height:50px;background:#231F20"></i>
+  <i style="position:absolute;right:-70px;bottom:-2px;width:50px;height:5px;background:#231F20"></i>
+  <i style="position:absolute;right:-2px;bottom:-70px;width:5px;height:50px;background:#231F20"></i>
+  <div style="position:absolute;left:40px;right:40px;top:40px;height:200px;background:#231F20;color:#fff;
+   display:flex;align-items:center;justify-content:center;font:900 190px/1 Superclarendon,'PT Serif',Georgia,serif">T</div>
+  <div style="position:absolute;left:40px;right:40px;top:282px;height:26px;background:#231F20"></div>
+  <div style="position:absolute;left:28px;right:96px;top:338px;height:50px;background:#FFE94D"></div>
+  <div style="position:absolute;left:40px;right:108px;top:350px;height:26px;background:#231F20"></div>
+  <div style="position:absolute;left:40px;right:40px;top:418px;height:26px;background:#231F20"></div>
+ </div>
 </div></body></html>"""
 
 

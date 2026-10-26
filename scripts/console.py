@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import importlib.resources
 import logging
 import os
 import re
@@ -44,6 +45,7 @@ from urllib.parse import parse_qs
 
 from tg_newspaper import setup_wizard as wizard
 from tg_newspaper.config import channels_path, env_path, home_dir, load_config
+from tg_newspaper.console_theme import page
 from tg_newspaper.feedback import (
     agreement,
     create_issue_survey,
@@ -92,12 +94,11 @@ from tg_newspaper.storage import (
 
 PORT = 8420
 
-_SHUTDOWN_PAGE = (
-    '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
-    "<title>TG Newspaper</title></head>"
-    '<body style="font-family:sans-serif;max-width:32em;margin:4em auto">'
-    "<h1>Консоль остановлена</h1>"
-    "<p>Запустить снова — иконкой TG Newspaper.</p></body></html>"
+_SHUTDOWN_PAGE = page(
+    "консоль остановлена",
+    '<h1>Консоль остановлена</h1><p class="lede">Запустить снова — иконкой TG Newspaper.</p>',
+    nav=False,
+    footer=False,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,9 @@ _ISSUE_PNG_RE = re.compile(r"/issue/([0-9]+)/page_([0-9]+)\.png")
 _ISSUE_PDF_RE = re.compile(r"/issue/([0-9]+)/(a4|a3)\.pdf")
 _RENDER_RE = re.compile(r"/run_([0-9]+)/render")
 
+# Bundled fonts: a strict whitelist pattern, so the name can never be a path.
+_FONT_RE = re.compile(r"/static/fonts/([a-z0-9-]+\.woff2)")
+
 _SESSION_NAME_RE = re.compile(r"[A-Za-z0-9_.\-]{1,64}")
 
 
@@ -147,6 +151,21 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         if filename:
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_font(self, name: str) -> None:
+        """Serves a bundled woff2 from the package (needed before the setup
+        gate: the wizard page uses the fonts too)."""
+        font = importlib.resources.files("tg_newspaper") / "static" / "fonts" / name
+        if not font.is_file():
+            self._send_html("not found", status=404)
+            return
+        data = font.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "font/woff2")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=31536000")
         self.end_headers()
         self.wfile.write(data)
 
@@ -440,6 +459,10 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         self._setup_redirect(step)
 
     def do_GET(self) -> None:  # noqa: N802 (method name dictated by http.server)
+        m_font = _FONT_RE.fullmatch(self.path.partition("?")[0])
+        if m_font:
+            self._serve_font(m_font.group(1))
+            return
         if self.path == "/setup" or self.path.startswith("/setup?"):
             self._handle_setup_get()
             return
@@ -455,12 +478,14 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             pending = run_id is not None and not any(
                 s.submitted for s in list_surveys(conn, "issue", run_id=run_id)
             )
+            runs = list_runs(conn)
             self._send_html(
                 render_index_page(
-                    list_runs(conn),
+                    runs,
                     onboarded=load_profile(conn).onboarded,
                     issue_survey_run_id=run_id if pending else None,
                     learning=learning_stats(conn),
+                    page_counts={r.run_id: len(issue_pages(config, r.run_id)) for r in runs},
                 )
             )
             return

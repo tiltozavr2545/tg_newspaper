@@ -3,18 +3,39 @@
 <head>
 <meta charset="utf-8">
 <title>TG Newspaper — подготовка</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: Georgia, "Times New Roman", serif; max-width: 34em; margin: 5em auto; padding: 0 1em; color: #1a1a1a; background: #f3ecd9; }
-  h1 { border-bottom: 3px double #1a1a1a; padding-bottom: .3em; }
-  p { line-height: 1.5; }
-  .muted { color: #666; font-size: 14px; }
+  /* Standalone page (opened via file://): tokens copied from
+     console_theme.py; fonts via local() only, with fallbacks. */
+  :root { --ink: #231F20; --ink-70: #5A5556; --cyan-ink: #1D6C88; --grid: #DCEDF3; --magenta: #C8006F; --board: #F2F7F9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 400 15px/1.45 "PT Sans", "Segoe UI", system-ui, sans-serif; color: var(--ink);
+         background-color: var(--board);
+         background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+         background-size: 24px 24px; }
+  .plate { background: var(--ink); color: #fff; min-height: 56px; display: flex; align-items: center; }
+  .wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+  .brand { font: 700 22px/1 Superclarendon, "Superclarendon Bold", "PT Serif", Georgia, serif; }
+  main { max-width: 620px; margin: 0; padding: 56px 0 72px; }
+  h1 { font: 700 40px/1.05 "PT Serif", Georgia, "Times New Roman", serif; margin: 0 0 20px; }
+  p { max-width: 62ch; margin: 0 0 14px; }
+  .meta { font: 700 13px/1.3 "PT Sans Narrow", "Arial Narrow", sans-serif; color: var(--cyan-ink); }
+  .strip { height: 10px; margin: 28px 0 10px; background: repeating-linear-gradient(-45deg, var(--ink) 0 12px, #3D3839 12px 24px);
+           background-size: 34px 34px; animation: feed 0.9s linear infinite; }
+  @keyframes feed { to { background-position: 34px 0; } }
+  @media (prefers-reduced-motion: reduce) { .strip { animation: none; } }
+  @media (max-width: 640px) { .wrap { padding: 0 16px; } .brand { font-size: 18px; } main { padding-top: 36px; } }
 </style>
 </head>
 <body>
-  <h1>TG Newspaper</h1>
-  <p>Готовлю TG Newspaper к первому запуску… Это займёт 2–3 минуты: скачиваются Python, библиотеки и браузер для вёрстки (нужен интернет).</p>
-  <p>Эта страница сама перейдёт в консоль, как только всё будет готово. Закрывать её не нужно.</p>
-  <p class="muted" id="status"></p>
+  <header class="plate"><div class="wrap"><span class="brand">DAILY TIMOHA</span></div></header>
+  <div class="wrap"><main>
+    <h1>Готовлю TG Newspaper к первому запуску</h1>
+    <p>Это займёт 2–3 минуты: скачиваются Python, библиотеки и браузер для вёрстки (нужен интернет).</p>
+    <p>Эта страница сама перейдёт в консоль, как только всё будет готово. Закрывать её не нужно.</p>
+    <div class="strip" role="progressbar" aria-label="Подготовка"></div>
+    <p class="meta" id="status"></p>
+  </main></div>
 <script>
   // Template: the launcher (launch.sh / launch.ps1) substitutes __PORT__. The
   // console is on a different origin, hence no-cors: the response is opaque,

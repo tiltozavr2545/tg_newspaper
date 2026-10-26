@@ -4,17 +4,22 @@ detailed table of which posts made it into the paper, which were filtered
 out, and why. Viewing an already-saved run (pipeline.load_run) doesn't touch
 the LLM and doesn't trigger anything — the console can be browsed as many
 times as you like, for free; Telethon/LLM calls only happen on button press.
+
+Styling lives in console_theme (one shared stylesheet, page() wrapper).
 """
 
 from __future__ import annotations
 
 import html
-import os
-import subprocess
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError, version
 
-from .config import HOME_ENV, REPO_ROOT
+from .console_theme import (
+    edition_ru,
+    page,
+    ru_date,
+    ru_day_month,
+    section_head,
+)
 from .feedback import LearningStats
 from .layout import to_local
 from .pipeline import PostOutcome, enough_news_for_issue, few_news_message
@@ -35,97 +40,18 @@ STAGE_LABELS = {
 # rolling dedup window (Stage 2 item 4).
 NAV_RUNS_LIMIT = 5
 
-STYLE = """
-<style>
-  :root { color-scheme: light; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         margin: 0; padding: 24px; background: #f7f7f8; color: #1a1a1a; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  a { color: #2657d6; }
-  .subtitle { color: #666; margin: 0 0 20px; font-size: 13px; }
-  .nav { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
-  .nav a, .nav span { border: 1px solid #d0d0d5; border-radius: 6px; padding: 6px 12px;
-                       font-size: 13px; text-decoration: none; color: #333; background: #fff; }
-  .nav .current { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
-  .issue-box { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
-               padding: 14px 18px; margin-bottom: 20px; }
-  .issue-box h2 { font-size: 15px; margin: 0 0 10px; }
-  .issue-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
-                   margin-bottom: 12px; }
-  .issue-actions form { margin: 0; }
-  a.btn, button.btn { display: inline-block; border: 1px solid #1a1a1a; border-radius: 6px;
-                      background: #1a1a1a; color: #fff; padding: 8px 14px; font-size: 13px;
-                      font-weight: 600; text-decoration: none; cursor: pointer; }
-  button.btn.secondary { background: #fff; color: #1a1a1a; border-color: #d0d0d5; }
-  button.btn:disabled { opacity: .6; cursor: wait; }
-  .issue-pages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .issue-pages img { width: 100%; height: auto; display: block; border: 1px solid #ccc;
-                     background: #fff; }
-  .issue-empty { color: #666; font-size: 14px; margin: 0 0 10px; }
-  .summary { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-  .stat { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
-          padding: 10px 16px; }
-  .stat .n { font-size: 20px; font-weight: 700; display: block; }
-  .stat .label { font-size: 12px; color: #666; }
-  .filters { margin-bottom: 14px; display: flex; gap: 8px; }
-  .filters button { border: 1px solid #d0d0d5; background: #fff; border-radius: 6px;
-                     padding: 6px 12px; font-size: 13px; cursor: pointer; }
-  .filters button.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
-  table { width: 100%; border-collapse: collapse; background: #fff;
-          border: 1px solid #e2e2e5; border-radius: 8px; overflow: hidden; }
-  th, td { text-align: left; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid #eee;
-           vertical-align: top; }
-  th { background: #fafafa; position: sticky; top: 0; font-weight: 600; }
-  tr:last-child td { border-bottom: none; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
-           font-weight: 600; white-space: nowrap; }
-  .badge.in { background: #e3f6e5; color: #1a7a2e; }
-  .badge.out { background: #fbe8e8; color: #b02a2a; }
-  .badge.photo-unknown { background: transparent; color: #aaa; border: 1px dashed #ccc;
-                          font-weight: 400; }
-  .badge.photo-none { background: #eef1f5; color: #55606b; }
-  .badge.photo-nice { background: #fff3d6; color: #8a5a00; }
-  .badge.photo-essential { background: #fde2df; color: #a3231b; }
-  .scores { white-space: nowrap; font-size: 12px; color: #444; }
-  .learning { background: #fff; border: 1px solid #e2e2e5; border-radius: 8px;
-              padding: 10px 14px; margin-bottom: 20px; font-size: 13px; color: #333; }
-  .text-cell { max-width: 480px; }
-  .reason-cell { max-width: 320px; color: #444; }
-  .chan { color: #666; font-size: 12px; }
-  tr.hidden { display: none; }
-  details summary { cursor: pointer; }
-  .full-text { white-space: pre-wrap; margin-top: 6px; color: #333; }
-  ul.runs-list { list-style: none; padding: 0; }
-  ul.runs-list li { margin-bottom: 8px; }
-  ul.runs-list a { display: inline-block; padding: 10px 14px; background: #fff;
-                    border: 1px solid #e2e2e5; border-radius: 8px; width: 100%;
-                    box-sizing: border-box; }
-  .run-button-row { margin-bottom: 20px; }
-  .run-button { display: inline-block; border: none; border-radius: 8px;
-                background: #1a7a2e; color: #fff; padding: 12px 22px;
-                font-size: 15px; font-weight: 600; cursor: pointer; }
-  .run-button:hover { background: #156024; }
-  .run-note { color: #666; font-size: 13px; margin: 8px 0 0; }
-  .error-box { background: #fbe8e8; border: 1px solid #f0b8b8; color: #7a1a1a;
-               border-radius: 8px; padding: 14px 18px; margin-bottom: 20px;
-               white-space: pre-wrap; font-size: 13px; }
-  /* Блоки Этапа 6 (онбординг / опрос) на главной и страницах feedback_html. */
-  .banner { background: #fff3d6; border: 1px solid #ecd28a; color: #5c4200;
-            border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; }
-  .banner a { font-weight: 600; }
-  .banner.info { background: #e8f0fe; border-color: #b9cdf5; color: #1d3a7a; }
-</style>
-"""
+
+BUSY_RENDER = "Верстаю номер… это может занять пару минут"
+BUSY_RUN = "Собираю газету…"
 
 FILTER_SCRIPT = """
 <script>
-  const buttons = document.querySelectorAll('.filters button');
-  const rows = document.querySelectorAll('tbody tr');
-  buttons.forEach(btn => btn.addEventListener('click', () => {
-    buttons.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
+  const segButtons = document.querySelectorAll('.seg button');
+  const postRows = document.querySelectorAll('tbody tr');
+  segButtons.forEach(btn => btn.addEventListener('click', () => {
+    segButtons.forEach(b => b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
     const filter = btn.dataset.filter;
-    rows.forEach(row => {
+    postRows.forEach(row => {
       const show = filter === 'all' || row.dataset.status === filter;
       row.classList.toggle('hidden', !show);
     });
@@ -141,80 +67,91 @@ def run_page_filename(run_id: int) -> str:
 def _text_html(raw_text: str) -> str:
     """A short preview that expands on click — the post's full text, never truncated."""
     stripped = raw_text.strip()
-    preview = html.escape(stripped.replace("\n", " "))[:140]
     if len(stripped) <= 140:
         return html.escape(stripped)
+    preview = html.escape(stripped[:140].replace("\n", " "))
     full = html.escape(stripped)
-    return f'<details><summary>{preview}…</summary><div class="full-text">{full}</div></details>'
+    return f'<details class="expand"><summary>{preview}…</summary><div class="full-text">{full}</div></details>'
+
+
+def _short_dt(moment: datetime) -> str:
+    return to_local(moment).strftime("%d.%m %H:%M")
+
+
+def _photo_html(relevance: int) -> str:
+    """The photo line with a 3-square meter (filled = how much the post needs a photo)."""
+    if relevance >= 3:
+        level, label = 3, "обязательно"
+    elif relevance == 2:
+        level, label = 2, "уместно"
+    else:
+        level, label = 1, "не нужно"
+    squares = "".join("<i class=\"on\"></i>" if n < level else "<i></i>" for n in range(3))
+    return f'<div class="photo">Фото: {label}<span class="meter" aria-hidden="true">{squares}</span></div>'
+
+
+def _score_cell(outcome: PostOutcome) -> str:
+    """Importance scores: the final one as a big figure, under it the generic
+    and personal parts. Filtered-out posts get a dash (they never reach the
+    LLM scoring — photo_relevance is a placeholder for them too); old runs
+    (final_importance == 0) show just the generic score; personal == 0
+    (empty profile) isn't shown."""
+    if not outcome.included:
+        return '<span class="fig none">—</span>'
+    figure = outcome.final_importance if outcome.final_importance > 0 else outcome.importance
+    if figure <= 0:
+        top = '<span class="fig none">—</span>'
+    else:
+        parts = []
+        if outcome.final_importance <= 0:
+            parts.append("общая оценка")  # old run: the figure is the generic score itself
+        else:
+            if outcome.importance > 0:
+                parts.append(f"общая {outcome.importance}")
+            if outcome.personal_importance > 0:
+                parts.append(f"для вас {outcome.personal_importance}")
+        sub = f'<div class="subscores">{", ".join(parts)}</div>' if parts else ""
+        top = f'<span class="fig">{figure}</span>{sub}'
+    return top + _photo_html(outcome.photo_relevance)
 
 
 def _row_html(outcome: PostOutcome) -> str:
     p = outcome.post
     status = "in" if outcome.included else "out"
-    badge = "ПОШЁЛ" if outcome.included else "ОТСЕЯН"
+    stamp = (
+        '<span class="stamp ink">отобран</span>'
+        if outcome.included
+        else '<span class="stamp nonrepro">отсеян</span>'
+    )
     stage = STAGE_LABELS.get(outcome.stage, outcome.stage)
-    text = _text_html(p.text)
-    reason = html.escape(outcome.reason)
-    # For filtered-out posts, photo_relevance is a default placeholder (1),
-    # not a real LLM score: such posts never reach classification (see
-    # PostOutcome.photo_relevance in pipeline.py). We show a separate neutral
-    # placeholder, not one of the three real levels, so it isn't mistaken for
-    # an actual model decision.
-    if not outcome.included:
-        photo_badge = '<span class="badge photo-unknown">— не оценивалось</span>'
-    elif outcome.photo_relevance >= 3:
-        photo_badge = '<span class="badge photo-essential">📷 без фото теряется смысл</span>'
-    elif outcome.photo_relevance == 2:
-        photo_badge = '<span class="badge photo-nice">📷 фото уместно</span>'
-    else:
-        photo_badge = '<span class="badge photo-none">📷 фото не нужно</span>'
+    stage_html = "" if outcome.stage == "final" else f"<div>{html.escape(stage)}</div>"
     return f"""
     <tr data-status="{status}">
-      <td>{p.posted_at.isoformat(timespec="minutes")}</td>
-      <td><span class="chan">{html.escape(p.channel)}/{p.message_id}</span></td>
-      <td class="text-cell">{text}</td>
-      <td><span class="badge {status}">{badge}</span></td>
-      <td>{html.escape(stage)}</td>
-      <td class="reason-cell">{reason}</td>
-      <td>{photo_badge}</td>
-      <td>{_score_cell(outcome)}</td>
+      <td class="when"><div class="meta">{_short_dt(p.posted_at)}</div><div class="meta dim">{html.escape(p.channel)}/{p.message_id}</div></td>
+      <td><div class="post-text">{_text_html(p.text)}</div></td>
+      <td class="decision">{stamp}{stage_html}<div>{html.escape(outcome.reason)}</div></td>
+      <td class="scores">{_score_cell(outcome)}</td>
     </tr>"""
 
 
-def _score_cell(outcome: PostOutcome) -> str:
-    """Importance scores: generic, personal (for the reader), and final.
-    Filtered-out posts get a dash; old runs (final_importance == 0) show just
-    the generic score, as before; personal == 0 (empty profile) isn't shown."""
-    if not outcome.included or outcome.importance <= 0:
-        return '<span class="badge photo-unknown">—</span>'
-    parts = [f"общая <b>{outcome.importance}</b>"]
-    if outcome.final_importance > 0:
-        if outcome.personal_importance > 0:
-            parts.append(f"для вас <b>{outcome.personal_importance}</b>")
-        parts.append(f"итог <b>{outcome.final_importance}</b>")
-    return '<span class="scores">' + " · ".join(parts) + "</span>"
-
-
 def _nav_html(runs: list[Run], current_run_id: int | None) -> str:
-    items = []
+    items = ['<a href="index.html">Все прогоны</a>']
     for run in runs[:NAV_RUNS_LIMIT]:
-        label = to_local(run.started_at).strftime("%Y-%m-%d %H:%M")
+        label = to_local(run.started_at).strftime("%d.%m %H:%M")
         if run.run_id == current_run_id:
-            items.append(f'<span class="current">{label}</span>')
+            items.append(f'<span class="current" aria-current="page">{label}</span>')
         else:
             items.append(f'<a href="{run_page_filename(run.run_id)}">{label}</a>')
-    items.append('<a href="index.html">все прогоны</a>')
-    return f'<div class="nav">{"".join(items)}</div>'
+    return f'<nav class="runs-ribbon" aria-label="Прогоны">{"".join(items)}</nav>'
 
 
-def _period_html(period_start: datetime | None, period_end: datetime | None) -> str:
+def _window_part(period_start: datetime | None, period_end: datetime | None) -> str:
     if period_start is None or period_end is None:
         return ""
-    fmt = "%Y-%m-%d %H:%M"
-    return (
-        f'<p class="subtitle">Окно сбора: {to_local(period_start).strftime(fmt)} — '
-        f'{to_local(period_end).strftime(fmt)} (последние сутки от запуска).</p>'
-    )
+    def fmt(m: datetime) -> str:
+        local = to_local(m)
+        return f"{ru_day_month(local)}, {local.strftime('%H:%M')}"
+    return f" Окно сбора: {fmt(period_start)} — {fmt(period_end)}."
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
@@ -227,15 +164,35 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 
 
 def _render_form_html(run_id: int, label: str, secondary: bool = False) -> str:
-    # Assembly is slow (layout + Gemini calls) — block the button against
-    # repeated clicks, same as the main one.
-    cls = "btn secondary" if secondary else "btn"
+    # Assembly is slow (layout + Gemini calls) — data-busy turns the button
+    # into the "press is running" strip on submit (console_theme.BUSY_SCRIPT).
+    cls = "btn secondary press" if secondary else "btn press"
     return (
-        f'<form method="post" action="/run_{run_id}/render">'
-        f'<button class="{cls}" type="submit" onclick="this.disabled=true; '
-        f"this.innerText='Верстаю номер… это может занять пару минут';\">"
-        f"{label}</button></form>"
+        f'<form method="post" action="/run_{run_id}/render" data-busy="{BUSY_RENDER}">'
+        f'<button class="{cls}" type="submit">{label}</button></form>'
     )
+
+
+def _sheets_html(run_id: int, page_count: int) -> str:
+    """One A3 sheet = two landscape strips stacked (pages 2k-1 over 2k)."""
+    sheets = []
+    for first in range(1, page_count + 1, 2):
+        nums = [n for n in (first, first + 1) if n <= page_count]
+        imgs = "".join(
+            f'<a href="/issue/{run_id}/page_{n}.png" target="_blank">'
+            f'<img src="/issue/{run_id}/page_{n}.png" loading="lazy" alt="Полоса {n}"></a>'
+            for n in nums
+        )
+        caption = (
+            f"Лист {(first + 1) // 2}, полосы {nums[0]}–{nums[1]}"
+            if len(nums) == 2
+            else f"Лист {(first + 1) // 2}, полоса {nums[0]}"
+        )
+        sheets.append(
+            f'<div class="sheet"><figure><div class="crop"><div class="paper">{imgs}</div></div>'
+            f'<figcaption class="meta">{caption}</figcaption></figure></div>'
+        )
+    return f'<div class="sheets">{"".join(sheets)}</div>'
 
 
 def _issue_html(run_id: int, included: int, page_count: int, render_error: str | None) -> str:
@@ -243,35 +200,29 @@ def _issue_html(run_id: int, included: int, page_count: int, render_error: str |
     re-assembly. The page list is passed in from outside — this module never
     touches the filesystem."""
     error_html = (
-        f'<div class="error-box">Не удалось свёрстать номер (отбор сохранён):\n'
-        f"{html.escape(render_error)}</div>"
+        '<div class="error-box"><p class="err-title">Не удалось свёрстать номер (отбор сохранён):</p>'
+        f"<pre>{html.escape(render_error)}</pre></div>"
         if render_error
         else ""
     )
     if page_count:
-        sheets = page_count // 2
-        previews = "\n".join(
-            f'<a href="/issue/{run_id}/page_{n}.png" target="_blank">'
-            f'<img src="/issue/{run_id}/page_{n}.png" loading="lazy" alt="Полоса {n}"></a>'
-            for n in range(1, page_count + 1)
+        sheets = (page_count + 1) // 2
+        actions = (
+            f'<a class="btn" href="/issue/{run_id}/a4.pdf">PDF A4, {page_count} {_plural(page_count, "полоса", "полосы", "полос")}</a>'
+            f'<a class="btn" href="/issue/{run_id}/a3.pdf">PDF A3, {sheets} {_plural(sheets, "лист", "листа", "листов")}</a>'
+            f'{_render_form_html(run_id, "Пересобрать номер", secondary=True)}'
         )
-        body = f"""
-    <div class="issue-actions">
-      <a class="btn" href="/issue/{run_id}/a4.pdf">Скачать PDF — {page_count} {_plural(page_count, "полоса", "полосы", "полос")} A4</a>
-      <a class="btn" href="/issue/{run_id}/a3.pdf">Скачать PDF — {sheets} {_plural(sheets, "лист", "листа", "листов")} A3</a>
-      {_render_form_html(run_id, "Пересобрать номер", secondary=True)}
-    </div>
-    <div class="issue-pages">{previews}</div>"""
-    elif enough_news_for_issue(included):
-        body = f"""
-    <p class="issue-empty">Номер ещё не свёрстан.</p>
-    <div class="issue-actions">{_render_form_html(run_id, "Свёрстать номер")}</div>"""
+        return section_head("Номер", actions) + error_html + _sheets_html(run_id, page_count)
+    head = section_head("Номер")
+    if enough_news_for_issue(included):
+        body = (
+            "<p>Номер ещё не свёрстан.</p>"
+            f'<form method="post" action="/run_{run_id}/render" data-busy="{BUSY_RENDER}">'
+            '<button class="btn press" type="submit">Свёрстать номер</button></form>'
+        )
     else:
-        body = f'<p class="issue-empty">{html.escape(few_news_message(included))}</p>'
-    return f'''<div class="issue-box">
-    <h2>Номер</h2>
-    {error_html}{body}
-  </div>'''
+        body = f"<p>{html.escape(few_news_message(included))}</p>"
+    return head + error_html + body
 
 
 def _videos_html(videos: list[YoutubeVideo], youtube_enabled: bool) -> str:
@@ -279,14 +230,15 @@ def _videos_html(videos: list[YoutubeVideo], youtube_enabled: bool) -> str:
     if not videos and not youtube_enabled:
         return ""
     if not videos:
-        return '<div class="issue-box"><h2>Новые видео (0)</h2><p class="issue-empty">За период новых видео нет.</p></div>'
-    items = "".join(
-        f'<li>{html.escape(v.channel_title)} · '
+        return section_head("Новые видео (0)") + "<p>За период новых видео нет.</p>"
+    rows = "".join(
+        '<div class="video-row">'
+        f'<span class="meta">{html.escape(v.channel_title)}</span>'
         f'<a href="https://youtu.be/{html.escape(v.video_id)}" target="_blank" rel="noopener">{html.escape(v.title)}</a>'
-        f' · {v.published_at.astimezone().strftime("%Y-%m-%d %H:%M")}</li>'
+        f'<span class="meta">{v.published_at.astimezone().strftime("%d.%m %H:%M")}</span></div>'
         for v in videos
     )
-    return f'<div class="issue-box"><h2>Новые видео ({len(videos)})</h2><ul>{items}</ul></div>'
+    return section_head(f"Новые видео ({len(videos)})") + f'<div class="paper">{rows}</div>'
 
 
 def render_run_page(
@@ -307,72 +259,46 @@ def render_run_page(
     excluded = total - included
     rows = "\n".join(_row_html(o) for o in outcomes_sorted)
 
-    return f"""<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>TG Newspaper — прогон {to_local(run_started_at).strftime("%Y-%m-%d %H:%M")}</title>
-{STYLE}
-</head>
-<body>
-  <h1>Прогон {to_local(run_started_at).strftime("%Y-%m-%d %H:%M")}</h1>
-  <p class="subtitle">Эвристики → копипаст-дедуп → LLM-классификация → дедуп пересказов.</p>
-  {_period_html(period_start, period_end)}
+    moment = to_local(period_end or run_started_at)
+    title = f"{edition_ru(moment)}, {ru_date(moment)}"
+    lede = (
+        f"Прогон запущен в {to_local(run_started_at).strftime('%H:%M')}."
+        + _window_part(period_start, period_end)
+    )
 
+    body = f"""
   {_nav_html(all_runs, run_id)}
+  <h1>{html.escape(title)}</h1>
+  <p class="lede">{html.escape(lede)}</p>
 
   {_issue_html(run_id, included, issue_page_count, render_error)}
 
   {_videos_html(videos or [], youtube_enabled)}
 
-  <div class="summary">
-    <div class="stat"><span class="n">{total}</span><span class="label">всего постов</span></div>
-    <div class="stat"><span class="n">{included}</span><span class="label">пошли в газету</span></div>
-    <div class="stat"><span class="n">{excluded}</span><span class="label">отсеяны</span></div>
+  {section_head("Отбор постов")}
+  <p class="lede">Эвристики, копипаст-дедуп, LLM-классификация, дедуп пересказов.</p>
+  <div class="seg" role="group" aria-label="Фильтр постов">
+    <button type="button" data-filter="all" aria-pressed="true">Все <b>{total}</b></button>
+    <button type="button" data-filter="in" aria-pressed="false">Отобраны <b>{included}</b></button>
+    <button type="button" data-filter="out" aria-pressed="false">Отсеяны <b>{excluded}</b></button>
   </div>
-
-  <div class="filters">
-    <button class="active" data-filter="all">Все</button>
-    <button data-filter="in">Пошли в газету</button>
-    <button data-filter="out">Отсеяны</button>
-  </div>
-
-  <table>
+  <div class="paper table-wrap">
+  <table class="posts">
     <thead>
       <tr>
-        <th>Время</th>
-        <th>Канал/ID</th>
-        <th>Текст</th>
-        <th>Статус</th>
-        <th>Этап</th>
-        <th>Причина</th>
-        <th>Фото</th>
-        <th>Значимость</th>
+        <th>Когда и где</th>
+        <th>Пост</th>
+        <th>Решение</th>
+        <th>Оценки</th>
       </tr>
     </thead>
     <tbody>
       {rows}
     </tbody>
   </table>
-{FILTER_SCRIPT}
-</body>
-</html>"""
-
-
-_RUN_BUTTON_HTML = """
-  <div class="run-button-row">
-    <form method="post" action="/run">
-      <button class="run-button" type="submit" onclick="this.disabled=true; this.innerText='Собираю газету… это может занять пару минут';">
-        🗞️ Собрать газету
-      </button>
-    </form>
-    <p class="run-note">
-      Заберёт посты за последние 24 часа, отфильтрует, отсеет дубли и сразу свёрстает
-      номер (PDF для печати) — займёт время (Telethon + вызовы LLM + вёрстка),
-      страница обновится по готовности.
-    </p>
   </div>
-"""
+{FILTER_SCRIPT}"""
+    return page(f"прогон {to_local(run_started_at).strftime('%Y-%m-%d %H:%M')}", body, active="runs")
 
 
 def _feedback_banners_html(onboarded: bool, issue_survey_run_id: int | None) -> str:
@@ -381,15 +307,15 @@ def _feedback_banners_html(onboarded: bool, issue_survey_run_id: int | None) -> 
     parts = []
     if not onboarded:
         parts.append(
-            '<div class="banner"><strong>Сначала расскажите о себе.</strong> '
+            '<div class="attn"><strong>Сначала расскажите о себе.</strong> '
             "Пока вы не прошли короткий онбординг, прогон не запустится — газета "
-            'подбирается под ваши интересы. <a href="/onboarding">Пройти онбординг →</a></div>'
+            'подбирается под ваши интересы. <a href="/onboarding">Пройти онбординг</a></div>'
         )
     if issue_survey_run_id is not None:
         parts.append(
-            '<div class="banner info"><strong>Оцените прошлый номер.</strong> '
+            '<div class="attn"><strong>Оцените прошлый номер.</strong> '
             "Расставьте 5 постов по важности — так газета научится отбирать "
-            f'лучше. <a href="/issue_survey/{issue_survey_run_id}">Оценить →</a></div>'
+            f'лучше. <a href="/issue_survey/{issue_survey_run_id}">Оценить</a></div>'
         )
     return "\n  ".join(parts)
 
@@ -417,8 +343,50 @@ def _learning_html(stats: LearningStats | None) -> str:
             f"предыдущие 5 — {stats.previous_avg:+.2f} ({trend})"
         )
     return (
-        f'<div class="learning"><strong>Учится ли газета:</strong> опросов отправлено '
-        f"{stats.submitted}; {body}.</div>"
+        f'<p class="learning"><span class="meta">Учится ли газета</span><br>'
+        f"опросов отправлено <b>{stats.submitted}</b>; {body}.</p>"
+    )
+
+
+def _next_issue_html(now: datetime) -> str:
+    return f"""<div class="slip">
+      <div class="meta">Следующий номер</div>
+      <h1>{html.escape(edition_ru(now))}</h1>
+      <p class="lede">{html.escape(ru_date(now))}</p>
+      <form method="post" action="/run" data-busy="{BUSY_RUN}">
+        <button class="btn press big" type="submit">Собрать газету</button>
+      </form>
+      <p class="note">Заберёт посты за последние 24 часа, отфильтрует, отсеет дубли и сразу
+      свёрстает номер. Это займёт пару минут — страница обновится сама.</p>
+    </div>"""
+
+
+def _run_moment(run: Run) -> datetime:
+    return to_local(run.period_end or run.started_at)
+
+
+def _cover_html(run: Run, count: int) -> str:
+    imgs = "".join(
+        f'<img src="/issue/{run.run_id}/page_{n}.png" loading="lazy" alt="Полоса {n}">'
+        for n in range(1, min(count, 2) + 1)
+    )
+    moment = _run_moment(run)
+    return f"""<div>
+      <div class="crop"><a class="paper cover" href="{run_page_filename(run.run_id)}">{imgs}</a></div>
+      <div class="cover-meta"><div class="meta">Последний номер</div>
+      <a href="{run_page_filename(run.run_id)}">{html.escape(edition_ru(moment))}, {html.escape(ru_date(moment))}</a></div>
+    </div>"""
+
+
+def _run_row_html(run: Run, count: int) -> str:
+    moment = _run_moment(run)
+    pages = f"{count} {_plural(count, 'полоса', 'полосы', 'полос')}" if count else "без номера"
+    return (
+        '<li class="run-row">'
+        f'<span class="date">{html.escape(ru_date(moment))}</span>'
+        f'<span class="meta">{to_local(run.started_at).strftime("%H:%M")}</span>'
+        f'<a href="{run_page_filename(run.run_id)}">{html.escape(edition_ru(moment))}</a>'
+        f'<span class="meta">{pages}</span></li>'
     )
 
 
@@ -428,86 +396,47 @@ def render_index_page(
     onboarded: bool = True,
     issue_survey_run_id: int | None = None,
     learning: LearningStats | None = None,
+    page_counts: dict[int, int] | None = None,
 ) -> str:
+    counts = page_counts or {}
+    # The cover is the newest run that has an assembled issue.
+    with_pages = [r for r in runs if counts.get(r.run_id, 0) > 0]
+    latest = max(with_pages, key=lambda r: r.run_id) if with_pages else None
+
     if not runs:
         list_html = (
-            "<p>Пока нет ни одного сохранённого прогона — нажмите кнопку выше, "
-            "чтобы собрать первый.</p>"
+            '<p class="paper empty">Прогонов пока нет. Нажмите «Собрать газету» — '
+            "первый появится здесь.</p>"
         )
     else:
-        items = "\n".join(
-            f'<li><a href="{run_page_filename(run.run_id)}">{to_local(run.started_at).strftime("%Y-%m-%d %H:%M")}</a></li>'
-            for run in runs
-        )
-        list_html = f'<ul class="runs-list">{items}</ul>'
+        rows = "\n".join(_run_row_html(r, counts.get(r.run_id, 0)) for r in runs)
+        list_html = f'<ul class="paper run-rows">{rows}</ul>'
 
-    error_html = f'<div class="error-box">{html.escape(error)}</div>' if error else ""
+    error_html = (
+        f'<div class="error-box"><pre>{html.escape(error)}</pre></div>' if error else ""
+    )
+    left = _next_issue_html(datetime.now()) + _learning_html(learning)
+    if latest is not None:
+        grid = f'<div class="home-grid two"><div>{left}</div>{_cover_html(latest, counts[latest.run_id])}</div>'
+    else:
+        grid = f'<div class="home-grid"><div>{left}</div></div>'
 
-    return f"""<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>TG Newspaper — прогоны</title>
-{STYLE}
-</head>
-<body>
-  <h1>TG Newspaper</h1>
-  <p class="subtitle">Каждый прогон — сбор постов за последние сутки от нажатия кнопки и их отбор.
-  · <a href="/setup">Настройки</a></p>
+    body = f"""
   {_feedback_banners_html(onboarded, issue_survey_run_id)}
-  {_learning_html(learning)}
   {error_html}
-  {_RUN_BUTTON_HTML}
+  {grid}
+  {section_head("Прогоны")}
   {list_html}
-  <form method="post" action="/shutdown" style="margin-top:3em;text-align:right"
-        onsubmit="return confirm('Выключить консоль? Запустить снова можно иконкой TG Newspaper.')">
-    <span style="color:#aaa;font-size:11px;margin-right:1em">TG Newspaper {_app_version()}</span>
-    <button type="submit" style="background:none;border:none;color:#888;font-size:12px;cursor:pointer;text-decoration:underline">Выключить консоль</button>
-  </form>
-</body>
-</html>"""
-
-
-def _app_version() -> str:
-    """The installed package's version; "dev" where there's no metadata.
-
-    Only CI fills in the release number at build time, and in the repo, the
-    pyproject version doesn't match the tag. So when running from the repo
-    (no TG_NEWSPAPER_HOME), this shows that it's a dev build plus a short
-    commit hash; if git is unavailable, it just stays "+dev". In a release,
-    it's just the version.
-    """
-    try:
-        ver = version("tg-newspaper")
-    except PackageNotFoundError:
-        return "dev"
-    if os.environ.get(HOME_ENV):
-        return ver
-    ver = f"{ver}+dev"
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
-            timeout=2, capture_output=True, text=True, check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ver
-    commit = result.stdout.strip()
-    return f"{ver} · {commit}" if commit else ver
+"""
+    return page("прогоны", body, active="runs")
 
 
 def render_error_page(message: str) -> str:
     """A run-failure page (a Telethon/Gemini failure, etc.) — shown instead of
     a result, so the error message isn't lost in the server console."""
-    return f"""<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>TG Newspaper — ошибка прогона</title>
-{STYLE}
-</head>
-<body>
+    body = f"""
   <h1>Прогон не удался</h1>
-  <div class="error-box">{html.escape(message)}</div>
-  <p><a href="/">← вернуться</a></p>
-</body>
-</html>"""
+  <div class="error-box"><pre>{html.escape(message)}</pre></div>
+  <p><a href="/">На главную</a></p>
+"""
+    return page("ошибка прогона", body)

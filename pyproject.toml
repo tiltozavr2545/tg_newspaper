@@ -1,6 +1,6 @@
 [project]
 name = "tg-newspaper"
-version = "0.1.4"
+version = "0.1.5"
 description = "An agent that prints a paper newspaper from yesterday's news from Telegram channels"
 authors = [
     { name = "Тимофей Русаков", email = "toptim2545@gmail.com" }
