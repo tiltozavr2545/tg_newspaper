@@ -38,7 +38,7 @@ See _build_bands for the proportions and the tier split.
 The first merged sheet of the issue (SHEET_UNITS pages) is the
 cover/POSTER page (_cover_page_html), styled after the Daily Bugle cover:
 the title in white on a black plate with a bugle medallion, teaser boxes
-above it, a giant screamer headline, a photo with a diagonal ribbon, and
+above it, a giant screamer headline, a photo, and
 an inverse strip at the bottom. The cover does NOT print a single
 article — it only entices the reader into the issue with loud teasers
 (generated for the 4 main stories by the LLM, see classifier.teasers),
@@ -121,7 +121,6 @@ MASTHEAD_RIGHT = "TIMOHA"
 MASTHEAD_TITLE = f"{MASTHEAD_LEFT} {MASTHEAD_RIGHT}"  # on one line — for the mosaic pages' running-header
 MASTHEAD_PUBLISHER = "Тимоха Пресс"
 MASTHEAD_PRICE = "Тираж: 1 экз."
-COVER_RIBBON_TEXT = "Спецвыпуск"  # diagonal ribbon on the main announcement's photo
 
 # The minimum photo_relevance score (see classifier.py) at which a post
 # gets a photo at all — a score of 1 ("not needed") never shows a photo,
@@ -664,19 +663,11 @@ _STYLE_TEMPLATE = """
     color: #777; margin-bottom: 1.5mm;
   }}
 
-  /* Кадр главного анонса с диагональной лентой в углу — тот самый
-     "SPECIAL EDITION" из референса. */
+  /* Main announcement photo. No ribbon over it: a playful label on a news
+     photo (e.g. a wanted-persons lineup) can clash with its meaning. */
   .cover-photo {{
     position: relative; overflow: hidden; background-color: #333;
     margin: 0 auto; flex: 1 1 auto; min-height: 0;
-  }}
-  .cover-ribbon {{
-    position: absolute; right: -19mm; top: 9mm; width: 74mm;
-    transform: rotate(40deg); z-index: 2;
-    background: #1a1a1a; color: #fdfcf8;
-    font-family: "Superclarendon", Georgia, serif;
-    font-size: 3.2mm; letter-spacing: 0.7mm; text-transform: uppercase;
-    text-align: center; padding: 1.4mm 0;
   }}
 
   /* Чем заполняется место главного анонса, когда у новости нет кадра
@@ -764,6 +755,82 @@ _STYLE_TEMPLATE = """
     font-size: 2.3mm; letter-spacing: 0.3mm; text-transform: uppercase;
     color: #555; text-align: center;
   }}
+
+  /* --- Стили выпусков (класс ed-<slug> на каждом .page) -------------------
+     Только чёрно-белое: оттенки серого, фоновые узоры, инверсия. Ничего,
+     что влияет на вместимость (кегли, отступы, высоты блоков), здесь не
+     меняется — размеры те же, что у базового (утреннего) вида. */
+
+  /* paper raster */
+  .ed-morning {{
+    background-image: radial-gradient(circle, rgba(0,0,0,0.035) 0.28mm, transparent 0.3mm);
+  }}
+  .ed-evening {{
+    background-color: #fbf8f0;
+    background-image: radial-gradient(circle, rgba(0,0,0,0.065) 0.26mm, transparent 0.28mm);
+    background-size: 1.4mm 1.4mm;
+  }}
+  /* coarse grey "cheap night print" */
+  .ed-night {{
+    background-image: radial-gradient(circle, rgba(0,0,0,0.09) 0.4mm, transparent 0.43mm);
+    background-size: 1.3mm 1.3mm;
+  }}
+
+  /* running-header glyph (inline SVG before the title) */
+  .running-header .ed-glyph {{
+    display: inline-block; height: 2.6mm; width: 2.6mm;
+    vertical-align: middle; margin: -0.4mm 1.2mm 0 0;
+  }}
+
+  /* masthead plate backgrounds */
+  .ed-afternoon .masthead-plate {{
+    background: repeating-conic-gradient(from 0deg at 50% 50%, #1a1a1a 0 6deg, #2b2b2b 6deg 12deg);
+  }}
+  /* retro sunset stripes in the lower part, thicker toward the bottom */
+  .ed-evening .masthead-plate {{
+    background-color: #1a1a1a;
+    background-image: linear-gradient(to bottom,
+      transparent 0 15.8mm, #8c8c8c 15.8mm 16.1mm,
+      transparent 16.1mm 17.4mm, #8c8c8c 17.4mm 17.85mm,
+      transparent 17.85mm 19.2mm, #8c8c8c 19.2mm 19.85mm,
+      transparent 19.85mm 21.2mm, #8c8c8c 21.2mm 22.1mm,
+      transparent 22.1mm 23.4mm, #8c8c8c 23.4mm 24.7mm,
+      transparent 24.7mm);
+  }}
+  .ed-evening .plate-medallion {{ background: #1a1a1a; }}
+  /* tiny irregular stars */
+  .ed-night .masthead-plate {{
+    background-color: #1a1a1a;
+    background-image:
+      radial-gradient(circle, #fdfcf8 0.17mm, transparent 0.21mm),
+      radial-gradient(circle, #fdfcf8 0.12mm, transparent 0.16mm),
+      radial-gradient(circle, #fdfcf8 0.3mm, transparent 0.34mm),
+      radial-gradient(circle, #fdfcf8 0.15mm, transparent 0.19mm);
+    background-size: 17mm 11mm, 23mm 13mm, 41mm 19mm, 13mm 9mm;
+    background-position: 3mm 2mm, 9mm 7mm, 20mm 5mm, 5mm 6mm;
+  }}
+
+  /* inverted teasers and strip on the night edition */
+  .ed-night .teaser-box {{ background: #1a1a1a; color: #fdfcf8; }}
+  .ed-night .teaser-label {{ color: #c4c4c4; }}
+  .ed-night .masthead-strip {{ background: #1a1a1a; color: #d8d8d8; }}
+  .ed-night .masthead-strip .edition-date {{ color: #fdfcf8; }}
+
+  /* section heads: same 1.2mm rule height in every edition */
+  .ed-afternoon .sec-head .sec-rule {{
+    border: 0;
+    background: radial-gradient(circle, #1a1a1a 0.3mm, transparent 0.34mm) 0 0 / 1.2mm 1.2mm repeat-x;
+  }}
+  .ed-evening .sec-head .sec-rule {{
+    border: 0;
+    background: linear-gradient(to bottom,
+      #1a1a1a 0 0.5mm, transparent 0.5mm 0.65mm,
+      #1a1a1a 0.65mm 0.85mm, transparent 0.85mm 0.95mm,
+      #1a1a1a 0.95mm 1.15mm, transparent 1.15mm);
+  }}
+  .ed-night .sec-head {{ background-color: #1a1a1a; color: #fdfcf8; }}
+  .ed-night .sec-head .sec-cont {{ color: #c4c4c4; }}
+  .ed-night .sec-head .sec-rule {{ border-color: #fdfcf8; }}
 </style>
 """
 
@@ -1856,6 +1923,7 @@ def _page_html(
     total_pages: int,
     date_label: str,
     edition: str,
+    style: "_EditionStyle",
 ) -> str:
     """A mosaic page (feature/brief) — the lead isn't part of it, it has
     its own cover page (_cover_page_html). All mosaic pages are
@@ -1866,11 +1934,11 @@ def _page_html(
 
     header_html = f"""
     <div class="running-header">
-      <strong>{MASTHEAD_TITLE}</strong> · {date_label} · {edition} · стр. {page_num} из {total_pages}
+      {style.glyph_svg}<strong>{MASTHEAD_TITLE}</strong> · {date_label} · {edition} · стр. {page_num} из {total_pages}
     </div>"""
 
     return f"""
-  <div class="page" data-page="{page_num}">
+  <div class="page ed-{style.slug}" data-page="{page_num}">
     {_REG_MARKS_HTML}
     {header_html}
     <div class="mosaic">
@@ -1880,19 +1948,21 @@ def _page_html(
   </div>"""
 
 
-# The medallion at the center of the masthead plate — a bugle in a
-# laurel wreath, as the device between DAILY and BUGLE on the reference
-# cover. Drawn directly as SVG rather than taken as an image/emoji: a
-# trumpet emoji in black-and-white print looks like a colored blob, and
-# external files can't be loaded into this render anyway (the HTML is
-# delivered via set_content, see render_pages).
-_MEDALLION_SVG = """
-<svg viewBox="0 0 120 86" xmlns="http://www.w3.org/2000/svg" fill="none">
-  <g stroke="#fdfcf8" stroke-width="2.4" stroke-linecap="round">
+# Edition styles. The medallion at the center of the masthead plate is a
+# laurel wreath (shared) around a per-edition emblem, as the device
+# between DAILY and BUGLE on the reference cover. Drawn directly as SVG
+# rather than taken as an image/emoji: external files can't be loaded
+# into this render anyway (the HTML is delivered via set_content, see
+# render_pages). Only black-and-white; nothing here may change a block's
+# size (see the capacity note in AGENTS.md).
+_PAPER = "#fdfcf8"
+
+_LAUREL_SVG = f"""
+  <g stroke="{_PAPER}" stroke-width="2.4" stroke-linecap="round">
     <path d="M30 72 Q12 44 28 16"/>
     <path d="M90 72 Q108 44 92 16"/>
   </g>
-  <g fill="#fdfcf8">
+  <g fill="{_PAPER}">
     <ellipse cx="20" cy="54" rx="5" ry="2.4" transform="rotate(-28 20 54)"/>
     <ellipse cx="17" cy="42" rx="5" ry="2.4" transform="rotate(-10 17 42)"/>
     <ellipse cx="19" cy="30" rx="5" ry="2.4" transform="rotate(14 19 30)"/>
@@ -1900,16 +1970,148 @@ _MEDALLION_SVG = """
     <ellipse cx="103" cy="42" rx="5" ry="2.4" transform="rotate(10 103 42)"/>
     <ellipse cx="101" cy="30" rx="5" ry="2.4" transform="rotate(-14 101 30)"/>
   </g>
-  <g fill="#fdfcf8">
-    <path d="M38 32 L54 38 L54 56 L38 62 Z"/>
-    <rect x="54" y="42" width="26" height="9"/>
-    <rect x="58" y="36" width="3.4" height="7"/>
-    <rect x="65" y="36" width="3.4" height="7"/>
-    <rect x="72" y="36" width="3.4" height="7"/>
-    <circle cx="84" cy="46.5" r="4.6"/>
-  </g>
-</svg>
 """
+
+
+def _medallion(center: str) -> str:
+    return (
+        '\n<svg viewBox="0 0 120 86" xmlns="http://www.w3.org/2000/svg" fill="none">'
+        f"{_LAUREL_SVG}{center}</svg>\n"
+    )
+
+
+def _spark(x: float, y: float, r: float) -> str:
+    """A four-point star centered on (x, y) with radius r."""
+    k = r * 0.32
+    return (
+        f'<path d="M{x} {y - r} L{x + k} {y - k} L{x + r} {y} L{x + k} {y + k} '
+        f'L{x} {y + r} L{x - k} {y + k} L{x - r} {y} L{x - k} {y - k} Z"/>'
+    )
+
+
+# Morning: half sun rising over the horizon, with rays.
+_MORNING_CENTER = f"""
+  <g fill="{_PAPER}">
+    <path d="M42 54 A18 18 0 0 1 78 54 Z"/>
+  </g>
+  <g stroke="{_PAPER}" stroke-width="3" stroke-linecap="round">
+    <path d="M34 57 H86"/>
+    <path d="M46 65 H74"/>
+    <path d="M60 31 V21"/>
+    <path d="M48.5 34.1 L43.5 25.4"/>
+    <path d="M71.5 34.1 L76.5 25.4"/>
+    <path d="M38 42 L30 37"/>
+    <path d="M82 42 L90 37"/>
+  </g>
+"""
+
+# Afternoon: full sun with rays and a clock face showing 12:00.
+_AFTERNOON_CENTER = f"""
+  <circle cx="60" cy="43" r="17" fill="{_PAPER}"/>
+  <g stroke="{_PAPER}" stroke-width="3" stroke-linecap="round">
+    <path d="M60 17 V10"/><path d="M60 69 V76"/>
+    <path d="M34 43 H27"/><path d="M86 43 H93"/>
+    <path d="M41.6 24.6 L36.6 19.6"/><path d="M78.4 24.6 L83.4 19.6"/>
+    <path d="M41.6 61.4 L36.6 66.4"/><path d="M78.4 61.4 L83.4 66.4"/>
+  </g>
+  <g stroke="#1a1a1a" stroke-linecap="round">
+    <path d="M60 30.5 V33.5 M60 52.5 V55.5 M47.5 43 H50.5 M69.5 43 H72.5" stroke-width="2"/>
+    <path d="M60 43 V32.5" stroke-width="2"/>
+    <path d="M60 43 V37" stroke-width="3.4"/>
+  </g>
+  <circle cx="60" cy="43" r="2.2" fill="#1a1a1a"/>
+"""
+
+# Evening: a lit street lamp — one bold silhouette that still reads at
+# the medallion's printed size (a sunset behind rooftops turned to mush).
+_EVENING_CENTER = f"""
+  <g fill="{_PAPER}">
+    <circle cx="60" cy="13.5" r="2.4"/>
+    <path d="M49 25 H71 L65 16.5 H55 Z"/>
+    <path d="M51.5 27.5 H68.5 L65.5 43 H54.5 Z"/>
+    <rect x="54" y="43" width="12" height="3"/>
+    <rect x="58" y="46" width="4" height="22"/>
+    <rect x="51" y="52" width="18" height="2.6"/>
+    <path d="M51 74 H69 L65.5 67 H54.5 Z"/>
+  </g>
+  <g stroke="{_PAPER}" stroke-width="3" stroke-linecap="round">
+    <path d="M45 31 L39.5 28.5"/><path d="M44.5 39 L38.5 40"/>
+    <path d="M75 31 L80.5 28.5"/><path d="M75.5 39 L81.5 40"/>
+  </g>
+"""
+
+# Night: crescent moon and three stars.
+_NIGHT_CENTER = f"""
+  <path d="M65 25.5 A20 20 0 1 0 69 58 A17 17 0 0 1 65 25.5 Z" fill="{_PAPER}"/>
+  <g fill="{_PAPER}">
+    {_spark(80, 32, 6)}
+    {_spark(88, 52, 4.2)}
+    {_spark(73, 66, 3.4)}
+  </g>
+"""
+
+# Small black glyphs (24x24 viewBox) for the mosaic pages' running-header.
+def _glyph(body: str) -> str:
+    return (
+        '<svg class="ed-glyph" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" '
+        f'fill="#1a1a1a" stroke="none">{body}</svg>'
+    )
+
+
+_MORNING_GLYPH = _glyph(
+    '<path d="M5 16 A7 7 0 0 1 19 16 Z"/><rect x="1.5" y="17.5" width="21" height="2.6" rx="1.3"/>'
+    '<g stroke="#1a1a1a" stroke-width="2.4" stroke-linecap="round">'
+    '<path d="M12 4 V1.5"/><path d="M4.5 8 L2.5 6"/><path d="M19.5 8 L21.5 6"/></g>'
+)
+_AFTERNOON_GLYPH = _glyph(
+    '<circle cx="12" cy="12" r="5.5"/>'
+    '<g stroke="#1a1a1a" stroke-width="2.4" stroke-linecap="round">'
+    '<path d="M12 1.5 V4"/><path d="M12 20 V22.5"/><path d="M1.5 12 H4"/><path d="M20 12 H22.5"/>'
+    '<path d="M4.6 4.6 L6.4 6.4"/><path d="M19.4 4.6 L17.6 6.4"/>'
+    '<path d="M4.6 19.4 L6.4 17.6"/><path d="M19.4 19.4 L17.6 17.6"/></g>'
+)
+_EVENING_GLYPH = _glyph(
+    '<path d="M7 5.5 H17 L14 2 H10 Z"/>'
+    '<path d="M8 6.5 H16 L14.6 12.5 H9.4 Z"/>'
+    '<rect x="11" y="12.5" width="2" height="8"/>'
+    '<path d="M8 23 H16 L15 20.5 H9 Z"/>'
+)
+_NIGHT_GLYPH = _glyph(
+    '<path d="M14 2 A10 10 0 1 0 22 16 A8.5 8.5 0 0 1 14 2 Z"/>'
+)
+
+
+@dataclass(frozen=True)
+class _EditionStyle:
+    """Everything per-edition that is not plain CSS: the medallion, the
+    tagline in the masthead strip, and the glyph of the mosaic pages'
+    running-header."""
+
+    slug: str
+    medallion_svg: str
+    tagline: str
+    glyph_svg: str
+
+
+_EDITION_STYLES = {
+    "morning": _EditionStyle(
+        "morning", _medallion(_MORNING_CENTER), "С пылу с жару", _MORNING_GLYPH
+    ),
+    "afternoon": _EditionStyle(
+        "afternoon", _medallion(_AFTERNOON_CENTER), "Пока горячее", _AFTERNOON_GLYPH
+    ),
+    "evening": _EditionStyle(
+        "evening", _medallion(_EVENING_CENTER), "Всё, что успели", _EVENING_GLYPH
+    ),
+    "night": _EditionStyle(
+        "night", _medallion(_NIGHT_CENTER), "Для полуночников", _NIGHT_GLYPH
+    ),
+}
+
+
+def edition_style(run_date: datetime) -> _EditionStyle:
+    """The visual style of the run's edition (see _edition)."""
+    return _EDITION_STYLES[_edition(run_date)[0]]
 
 
 @dataclass(frozen=True)
@@ -2005,16 +2207,15 @@ def _cover_list_html(articles: list[Article]) -> str:
     return f'<div class="cover-list">{items}</div>'
 
 
-def _cover_photo_html(announce: _Announce, width_mm: float, ribbon: bool) -> str:
+def _cover_photo_html(announce: _Announce, width_mm: float, main: bool) -> str:
     """The announcement's photo. Returns an empty string with no photo —
     the cover then relies purely on typography (user decision from
     2026-10-06), not a placeholder frame."""
     if announce.photo_data_uri is None:
         return ""
-    cls = "cover-photo" if ribbon else "secondary-photo"
-    ribbon_html = f'<div class="cover-ribbon">{COVER_RIBBON_TEXT}</div>' if ribbon else ""
+    cls = "cover-photo" if main else "secondary-photo"
     return (
-        f'<div class="{cls}" style="width: {width_mm}mm;">{ribbon_html}'
+        f'<div class="{cls}" style="width: {width_mm}mm;">'
         f'<img src="{announce.photo_data_uri}" alt=""></div>'
     )
 
@@ -2033,7 +2234,7 @@ def _secondary_item_html(announce: _Announce, photo_width_mm: float, column_mm: 
     font_mm = min(_screamer_font_mm(announce.screamer, column_mm * 0.72), SECONDARY_FONT_MAX_MM)
     return f"""
       <div class="secondary-item">
-        {_cover_photo_html(announce, photo_width_mm, ribbon=False)}
+        {_cover_photo_html(announce, photo_width_mm, main=False)}
         <h3 style="font-size: {font_mm}mm;">{html.escape(announce.screamer)}</h3>
         <p>{html.escape(announce.kicker)}</p>
       </div>"""
@@ -2055,6 +2256,7 @@ def _cover_page_html(
     secondary_column_mm: float,
     main_block_mm: float,
     screamer_width_mm: float,
+    style: "_EditionStyle",
 ) -> str:
     """The cover page is the issue's POSTER, not an article: big
     announcements (screamer + kicker + photo), teaser boxes above the
@@ -2085,23 +2287,23 @@ def _cover_page_html(
     # Room for the main screamer: a photo if there is one, otherwise a
     # text column of announcements (the page shouldn't gape empty on a
     # day with not a single photo).
-    main_fill_html = _cover_photo_html(main, main_photo_mm, ribbon=True) or _cover_list_html(
+    main_fill_html = _cover_photo_html(main, main_photo_mm, main=True) or _cover_list_html(
         fallback_list
     )
 
     return f"""
-  <div class="page" data-page="1">
+  <div class="page ed-{style.slug}" data-page="1">
     {_REG_MARKS_HTML}
     {teasers_html}
     <div class="masthead-plate">
       <span class="plate-word">{MASTHEAD_LEFT}</span>
-      <span class="plate-medallion">{_MEDALLION_SVG}</span>
+      <span class="plate-medallion">{style.medallion_svg}</span>
       <span class="plate-word">{MASTHEAD_RIGHT}</span>
     </div>
     <div class="masthead-strip">
       <span>{edition} · {MASTHEAD_PUBLISHER} · выпуск № {issue_number}</span>
       <span class="edition-date">{date_label}</span>
-      <span>{MASTHEAD_PRICE}</span>
+      <span>{style.tagline} · {MASTHEAD_PRICE}</span>
     </div>
     <div class="cover-body">
       <div class="cover-main" style="flex: 0 0 {main_block_mm}mm;">
@@ -2296,6 +2498,7 @@ def render_pages(
     )
     date_label = to_local(run_date).strftime("%d.%m.%Y")
     edition = edition_name(run_date)
+    ed_style = edition_style(run_date)
 
     def wrap(fragment: str) -> str:
         return f'<!doctype html><html lang="ru"><head><meta charset="utf-8">{style}</head><body>{fragment}</body></html>'
@@ -2346,7 +2549,7 @@ def render_pages(
                     # _fit_bands measures — the running-header has a
                     # fixed height (RUNNING_HEADER_BLOCK_MM) regardless
                     # of the text in it.
-                    return wrap(_page_html(queue, placements, 2, 2, date_label, edition))
+                    return wrap(_page_html(queue, placements, 2, 2, date_label, edition, ed_style))
 
                 candidates_count = len(remaining)
                 # The last allowed page: the video block is reserved in advance.
@@ -2454,10 +2657,10 @@ def render_pages(
                 main_announce, secondary_announces, teaser_top, teaser_bottom,
                 tertiary_articles, fallback_list,
                 date_label, edition, issue_number, total_pages, main_photo_mm, secondary_photo_mm,
-                secondary_column_mm, main_block_mm, content_w,
+                secondary_column_mm, main_block_mm, content_w, ed_style,
             )
             mosaic_html = "\n".join(
-                _page_html(sheet_bands, placements, i + 2, total_pages, date_label, edition)
+                _page_html(sheet_bands, placements, i + 2, total_pages, date_label, edition, ed_style)
                 for i, sheet_bands in enumerate(sheets)
             )
             all_sheets_html = cover_html + "\n" + mosaic_html
